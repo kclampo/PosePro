@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<title>TITAN POSE</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <h1>TITAN <span>POSE</span></h1>
+  <div id="poseCount" class="count">—</div>
+</header>
+
+<div class="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+  <div id="ready" class="ready wait">TAP START</div>
+  <div id="timer" class="timer">0.0</div>
+</div>
+
+<div class="bar"><div id="progress" class="fill"></div></div>
+
+<section class="panel">
+  <h2 id="poseName">Ready when you are</h2>
+  <p id="cue" class="cue">Randomised pose order, judge-style. Green = in tolerance, red = fix it. Hold 10 seconds once the READY light comes on.</p>
+
+  <ul id="gateList" class="gates"></ul>
+
+  <div class="btns">
+    <button id="startBtn" class="primary">START SESSION</button>
+    <button id="stopBtn" disabled>STOP</button>
+    <button id="exportBtn" disabled>SAVE SESSION</button>
+  </div>
+
+  <div class="notes">
+    <p><strong>One cue at a time.</strong> No numbers on screen — numbers go in the export for your coach.</p>
+    <p><strong>Hold clock pauses, never resets.</strong> Break the pose and it waits; get back in and it carries on from where you left it.</p>
+    <p><strong>Side poses:</strong> the arm-specific checks are yours to judge — landmarks can't measure them.</p>
+    <p><strong>Bands marked ESTIMATED</strong> recalibrate after your first session.</p>
+  </div>
+
+  <div class="exportbox">
+    <h3>Session summary <button id="copyBtn" class="mini">Copy summary</button></h3>
+    <pre id="summary"></pre>
+  </div>
+</section>
+
+<script src="pose-gates.js"></script>
+<script type="module" src="app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+</script>
+</body>
+</html>
