@@ -26,12 +26,16 @@
 
 <section class="panel">
   <h2 id="poseName">Ready when you are</h2>
-  <p id="cue" class="cue">Randomised pose order, judge-style. Green = in tolerance, red = fix it. Hold 10 seconds once the READY light comes on.</p>
+  <p id="cue" class="cue">Always opens on a FRONT pose so you can check the frame. Voice on: it tells you the pose and corrects you out loud — you do not need to see the screen.</p>
 
   <ul id="gateList" class="gates"></ul>
 
   <div class="btns">
     <button id="startBtn" class="primary">START SESSION</button>
+    <button id="flipBtn" disabled>CAM: REAR</button>
+    <button id="voiceBtn">VOICE: ON</button>
+    <button id="prevBtn" disabled>◀ PREV POSE</button>
+    <button id="nextBtn" disabled>NEXT POSE ▶</button>
     <button id="stopBtn" disabled>STOP</button>
     <button id="exportBtn" disabled>SAVE SESSION</button>
   </div>
@@ -39,7 +43,9 @@
   <div class="notes">
     <p><strong>One cue at a time.</strong> No numbers on screen — numbers go in the export for your coach.</p>
     <p><strong>Hold clock pauses, never resets.</strong> Break the pose and it waits; get back in and it carries on from where you left it.</p>
-    <p><strong>Side poses:</strong> the arm-specific checks are yours to judge — landmarks can't measure them.</p>
+    <p><strong>It talks.</strong> Every pose is announced with its cues on arrival, and each correction is spoken — so back poses work without the screen.</p>
+    <p><strong>PREV / NEXT</strong> jump poses at any time. A pose you leave early is saved as <em>skipped</em> if you held it for any length of time.</p>
+    <p><strong>CAM</strong> switches front/rear. The button shows which camera is actually live.</p>
     <p><strong>Bands marked ESTIMATED</strong> recalibrate after your first session.</p>
   </div>
 

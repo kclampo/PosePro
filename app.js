@@ -1,4 +1,4 @@
-/* app.js — TITAN POSE — real-time posing gate trainer
+/* app.js — TITAN POSE v1.1 — real-time posing gate trainer
  *
  * Runs 100% on-device. No network calls after load. No credentials.
  * MediaPipe Pose Landmarker (WASM/GPU) -> body-relative measurements -> gates -> green/red.
@@ -6,9 +6,17 @@
  * DESIGN RULE: the screen never shows a raw number to the athlete.
  * It colours the joint and prints ONE plain-language cue.
  * Numbers appear only in the export, for the coach.
+ *
+ * v1.1 (2026-10-21) — four fixes from Kevin's field test:
+ *   1. CAMERA FLIP — rear/front button, with the live camera mode shown.
+ *   2. MANUAL POSE NAV — PREV / NEXT, works mid-hold, records partial holds.
+ *   3. VOICE — speaks the pose and its cues on arrival, and speaks corrections.
+ *      This is what makes BACK poses usable: he is facing away from the screen.
+ *   4. FRAMING POSE FIRST — the session always opens on a FRONT pose so he can
+ *      confirm he is in frame before turning his back.
  */
 
-import { PoseLandmarker, FilesetResolver, DrawingUtils }
+import { PoseLandmarker, FilesetResolver }
   from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 
 const MP_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
@@ -17,6 +25,8 @@ const MP_MODEL =
 
 const HOLD_MS = 10_000;      // required green hold
 const READY_MS = 800;        // must be green this long before the hold clock starts
+const CUE_REPEAT_MS = 6_000; // never repeat the same spoken cue faster than this
+const OUT_OF_FRAME_MS = 8_000;
 
 // ── landmarks ────────────────────────────────────────────────────────────
 const L = { NOSE:0, LEAR:7, REAR:8, LSH:11, RSH:12, LEL:13, REL:14, LWR:15, RWR:16,
@@ -28,12 +38,18 @@ const video = $('cam'), overlay = $('overlay'), ctx = overlay.getContext('2d');
 const elPose = $('poseName'), elCue = $('cue'), elTimer = $('timer'),
       elReady = $('ready'), elProgress = $('progress'), elCount = $('poseCount'),
       elGateList = $('gateList'), elStart = $('startBtn'), elStop = $('stopBtn'),
-      elExport = $('exportBtn'), elSummary = $('summary'), elCopy = $('copyBtn');
+      elExport = $('exportBtn'), elSummary = $('summary'), elCopy = $('copyBtn'),
+      elFlip = $('flipBtn'), elVoice = $('voiceBtn'),
+      elPrev = $('prevBtn'), elNext = $('nextBtn');
 
 let landmarker = null, stream = null, running = false, lastVideoTime = -1;
 let order = [], idx = 0, state = 'idle';
 let greenRunStart = 0, holdAccum = 0, lastTick = 0;
 let session = null, currentRecord = null;
+
+let facing = 'environment';   // 'environment' = rear, 'user' = front
+let voiceOn = true;
+let lastCueSpoken = '', lastCueAt = 0, readySpoken = false, outFrameAt = 0;
 
 // ── geometry ─────────────────────────────────────────────────────────────
 const angle = (a, b, c) => {
@@ -91,6 +107,32 @@ function pickCue(gates, m) {
   return g.label;
 }
 
+// ── voice ────────────────────────────────────────────────────────────────
+const speechOK = typeof window !== 'undefined' && 'speechSynthesis' in window;
+
+function speak(text, interrupt = true) {
+  if (!voiceOn || !speechOK || !text) return;
+  try {
+    if (interrupt) speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.02; u.pitch = 1.0; u.volume = 1.0;
+    speechSynthesis.speak(u);
+  } catch (_) { /* speech is a nicety, never fatal */ }
+}
+
+function announcePose(p) {
+  // Label first, then the cues. This is the ONLY instruction he gets for a
+  // back pose, so it is not optional.
+  speak(`${p.label}. ${p.cues.join('. ')}.`);
+}
+
+function maybeSpeakCue(cue, now) {
+  if (!cue) return;
+  if (cue === lastCueSpoken && now - lastCueAt < CUE_REPEAT_MS) return;
+  lastCueSpoken = cue; lastCueAt = now;
+  speak(cue);
+}
+
 // ── drawing ──────────────────────────────────────────────────────────────
 const CONN = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
 function draw(lm, gates) {
@@ -122,12 +164,21 @@ function draw(lm, gates) {
 const manualTicked = {};
 const shuffle = a => { const x = a.slice(); for (let i = x.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [x[i], x[j]] = [x[j], x[i]]; } return x; };
 
+// FIX 4 — a FRONT pose always opens the session so he can confirm framing
+// before he turns his back to the camera. The rest are still shuffled.
+function buildOrder() {
+  const front = GATES.POSES.filter(p => p.facing === 'FRONT').sort((a, b) => a.order - b.order);
+  const opener = front[0] || GATES.POSES[0];
+  return [opener, ...shuffle(GATES.POSES.filter(p => p !== opener))];
+}
+
 function startSession() {
-  order = shuffle(GATES.POSES);
+  order = buildOrder();
   idx = 0; state = 'pose';
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.0',
-                         order: order.map(p => p.id) }, poses: [] };
+  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.1',
+                         camera: facing, order: order.map(p => p.id) }, poses: [] };
   elStart.disabled = true; elStop.disabled = false; elSummary.textContent = '';
+  elPrev.disabled = false; elNext.disabled = false;
   loadPose();
 }
 
@@ -135,6 +186,7 @@ function loadPose() {
   if (idx >= order.length) return finishSession();
   const p = order[idx];
   greenRunStart = 0; holdAccum = 0; lastTick = performance.now();
+  lastCueSpoken = ''; readySpoken = false; outFrameAt = 0;
   elPose.textContent = p.label;
   elCue.textContent = p.cues.join(' · ');
   elCue.className = 'cue';
@@ -145,23 +197,55 @@ function loadPose() {
   elGateList.innerHTML = p.gates.map(g =>
     `<li data-g="${g.id}"><span class="dot"></span>${g.label}` +
     `<em class="${g.status}">${g.status === 'manual' ? 'you judge' : g.status}</em></li>`).join('');
-  currentRecord = { pose: p.id, label: p.label, hold_seconds: 0, attempts: 1, gates: [] };
+  currentRecord = { pose: p.id, label: p.label, facing: p.facing,
+                    hold_seconds: 0, attempts: 1, skipped: false, gates: [] };
+  announcePose(p);
+}
+
+// Commit the pose in progress. Partial holds are kept — a skipped pose still
+// carries information for calibration.
+function commitCurrent(skipped) {
+  if (!session || !currentRecord) { currentRecord = null; return; }
+  if (holdAccum > 300) {
+    currentRecord.hold_seconds = +(holdAccum / 1000).toFixed(2);
+    currentRecord.skipped = !!skipped;
+    session.poses.push(currentRecord);
+  }
+  currentRecord = null;
 }
 
 function finishPose() {
-  currentRecord.hold_seconds = +(holdAccum / 1000).toFixed(2);
-  session.poses.push(currentRecord);
-  state = 'pose'; idx++; setTimeout(loadPose, 600);
+  commitCurrent(false);
+  state = 'pose'; idx++;
+  setTimeout(loadPose, 700);
+}
+
+// FIX 2 — manual navigation, works at any time during a pose.
+function nextPose() {
+  if (!session) return;
+  commitCurrent(true);
+  if (idx + 1 >= order.length) return finishSession();
+  idx++; loadPose();
+}
+
+function prevPose() {
+  if (!session) return;
+  commitCurrent(true);
+  if (idx > 0) idx--;          // at the first pose, just restart it
+  loadPose();
 }
 
 function finishSession() {
   state = 'done';
+  commitCurrent(true);
   stopCamera();
   elReady.textContent = 'SESSION COMPLETE'; elReady.className = 'ready ok';
   elPose.textContent = 'Done'; elCue.textContent = '';
   elProgress.style.width = '100%';
   elExport.disabled = false;
+  elPrev.disabled = true; elNext.disabled = true;
   elSummary.textContent = summaryText();
+  speak('Session complete.');
 }
 
 // ── main loop ────────────────────────────────────────────────────────────
@@ -177,7 +261,15 @@ function loop() {
   const dt = Math.min(200, now - lastTick); lastTick = now;
   const lm = res.landmarks && res.landmarks[0];
 
-  if (state !== 'pose' || !lm) { draw(lm, []); return; }
+  if (state !== 'pose') { draw(lm, []); return; }
+
+  if (!lm) {
+    // FIX 3 — he cannot see the screen in a back pose. Tell him.
+    draw(lm, []);
+    elReady.textContent = 'STEP INTO FRAME'; elReady.className = 'ready wait';
+    if (now - outFrameAt > OUT_OF_FRAME_MS) { outFrameAt = now; speak('Step into frame.'); }
+    return;
+  }
 
   const pose = order[idx];
   const m = measure(lm);
@@ -193,10 +285,12 @@ function loop() {
 
   if (!allGreen) {
     greenRunStart = 0;
+    readySpoken = false;
     const cue = pickCue(gates, m);
     if (cue) { elCue.textContent = cue; elCue.className = 'cue bad'; }
     elReady.textContent = m.vis > 0.5 ? 'NOT YET' : 'STEP INTO FRAME';
     elReady.className = 'ready wait';
+    maybeSpeakCue(cue, now);
     // hold clock PAUSES, does not reset
   } else {
     if (!greenRunStart) greenRunStart = now;
@@ -205,6 +299,7 @@ function loop() {
       holdAccum += dt;
       elReady.textContent = 'READY — HOLD'; elReady.className = 'ready ok';
       elCue.textContent = pose.cues.join(' · '); elCue.className = 'cue';
+      if (!readySpoken) { readySpoken = true; lastCueSpoken = ''; speak('Good. Hold.'); }
     } else {
       elReady.textContent = 'HOLD STILL…'; elReady.className = 'ready wait';
     }
@@ -223,20 +318,39 @@ function loop() {
   if (holdAccum >= HOLD_MS) {
     elReady.textContent = 'POSE LOCKED ✓'; elReady.className = 'ready ok';
     elCue.textContent = '';
+    speak('Locked.');
+    holdAccum = HOLD_MS;      // stop the clock ticking past the target
     finishPose();
   }
 }
 
 // ── camera + model ───────────────────────────────────────────────────────
-async function startCamera() {
-  elStart.disabled = true; elStart.textContent = 'STARTING…';
+function setCamLabel() {
+  elFlip.textContent = facing === 'user' ? 'CAM: FRONT' : 'CAM: REAR';
+}
+
+async function attachStream() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
   stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false,
   });
   video.srcObject = stream;
   await video.play();
-  overlay.width = video.videoWidth; overlay.height = video.videoHeight;
+  overlay.width = video.videoWidth || 1280;
+  overlay.height = video.videoHeight || 720;
+  lastVideoTime = -1;
+
+  // Report what the device ACTUALLY gave us — if the flip silently fails, the
+  // label will show it rather than leaving him guessing.
+  const st = stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings();
+  if (st && st.facingMode) facing = st.facingMode;
+  setCamLabel();
+}
+
+async function startCamera() {
+  elStart.disabled = true; elStart.textContent = 'STARTING…';
+  await attachStream();
 
   if (!landmarker) {
     const fileset = await FilesetResolver.forVisionTasks(MP_WASM);
@@ -247,7 +361,26 @@ async function startCamera() {
     });
   }
   running = true; elStart.textContent = 'RUNNING'; elStart.disabled = true;
+  elFlip.disabled = false;
   loop();
+}
+
+// FIX 1 — swap front/rear without tearing down the session or losing the hold.
+async function flipCamera() {
+  if (!stream) return;
+  facing = facing === 'environment' ? 'user' : 'environment';
+  setCamLabel();
+  elFlip.disabled = true;
+  try {
+    await attachStream();
+  } catch (e) {
+    // the requested camera is unavailable — fall back and say so
+    facing = facing === 'environment' ? 'user' : 'environment';
+    setCamLabel();
+    try { await attachStream(); } catch (_) { console.error(e); }
+  } finally {
+    elFlip.disabled = !running || !stream;
+  }
 }
 
 function stopCamera() {
@@ -255,26 +388,30 @@ function stopCamera() {
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   ctx.clearRect(0, 0, overlay.width, overlay.height);
-  elStop.disabled = true;
+  elStop.disabled = true; elFlip.disabled = true;
   elStart.disabled = false; elStart.textContent = 'START SESSION';
+  if (speechOK) speechSynthesis.cancel();
 }
 
 function stopSession() {
   stopCamera(); state = 'idle';
   elReady.textContent = 'STOPPED'; elReady.className = 'ready wait';
+  elPrev.disabled = true; elNext.disabled = true;
+  elProgress.style.width = '0%';
   if (session && session.poses.length) elExport.disabled = false;
 }
 
 // ── export ───────────────────────────────────────────────────────────────
 function summaryText() {
   if (!session) return '';
-  const lines = [`TITAN POSE — ${session.session.date.slice(0, 10)}`];
+  const lines = [`TITAN POSE — ${session.session.date.slice(0, 10)}`,
+                 `camera: ${session.session.camera}`];
   let pass = 0, total = 0;
   session.poses.forEach(p => {
     const g = p.gates.filter(x => x.target !== 'manual');
     const pg = g.filter(x => x.pass).length;
     pass += pg; total += g.length;
-    lines.push(`${p.label}: held ${p.hold_seconds}s · ${pg}/${g.length} gates`);
+    lines.push(`${p.label}${p.skipped ? ' (skipped)' : ''}: held ${p.hold_seconds}s · ${pg}/${g.length} gates`);
     g.filter(x => !x.pass).forEach(x => lines.push(`   ✗ ${x.name} = ${x.value} (target ${x.target})`));
   });
   lines.push(`TOTAL: ${pass}/${total} gates passed`);
@@ -294,11 +431,25 @@ async function exportSession() {
 
 // ── wire up ──────────────────────────────────────────────────────────────
 elStart.addEventListener('click', async () => {
-  try { await startCamera(); startSession(); }
-  catch (e) { elStart.disabled = false; elStart.textContent = 'START SESSION';
-              elReady.textContent = 'CAMERA/MODEL FAILED — see console'; console.error(e); }
+  try {
+    if (speechOK) speechSynthesis.getVoices();   // warm the voice list on the gesture
+    await startCamera();
+    startSession();
+  } catch (e) {
+    elStart.disabled = false; elStart.textContent = 'START SESSION';
+    elReady.textContent = 'CAMERA/MODEL FAILED — see console'; console.error(e);
+  }
 });
 elStop.addEventListener('click', stopSession);
+elFlip.addEventListener('click', flipCamera);
+elPrev.addEventListener('click', prevPose);
+elNext.addEventListener('click', nextPose);
+elVoice.addEventListener('click', () => {
+  voiceOn = !voiceOn;
+  elVoice.textContent = voiceOn ? 'VOICE: ON' : 'VOICE: OFF';
+  if (speechOK) speechSynthesis.cancel();
+  if (voiceOn) speak('Voice on.');
+});
 elExport.addEventListener('click', exportSession);
 elCopy.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(elSummary.textContent); elCopy.textContent = 'COPIED'; }
@@ -306,3 +457,4 @@ elCopy.addEventListener('click', async () => {
   setTimeout(() => elCopy.textContent = 'Copy summary', 1500);
 });
 elExport.disabled = true;
+setCamLabel();

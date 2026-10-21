@@ -1,6 +1,11 @@
 /* sw.js — offline shell. The model itself is cached by the browser HTTP cache;
- * this keeps the app usable if the phone drops off the network mid-session. */
-const CACHE = 'titan-pose-v1';
+ * this keeps the app usable if the phone drops off the network mid-session.
+ *
+ * ⚠️ BUMP CACHE ON EVERY DEPLOY. The fetch handler is cache-first, so an
+ * unchanged cache name means installed PWAs keep serving the OLD app forever.
+ * v2 = v1.1 (camera flip, pose nav, voice, framing pose first).
+ */
+const CACHE = 'titan-pose-v2';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './pose-gates.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
