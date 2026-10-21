@@ -3,9 +3,9 @@
  *
  * ⚠️ BUMP CACHE ON EVERY DEPLOY. The fetch handler is cache-first, so an
  * unchanged cache name means installed PWAs keep serving the OLD app forever.
- * v2 = v1.1 (camera flip, pose nav, voice, framing pose first).
+ * v3 = v1.2 (4:3 camera request instead of 16:9, live resolution readout).
  */
-const CACHE = 'titan-pose-v2';
+const CACHE = 'titan-pose-v3';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './pose-gates.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {

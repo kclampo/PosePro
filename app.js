@@ -1,4 +1,4 @@
-/* app.js — TITAN POSE v1.1 — real-time posing gate trainer
+/* app.js — TITAN POSE v1.2 — real-time posing gate trainer
  *
  * Runs 100% on-device. No network calls after load. No credentials.
  * MediaPipe Pose Landmarker (WASM/GPU) -> body-relative measurements -> gates -> green/red.
@@ -40,7 +40,7 @@ const elPose = $('poseName'), elCue = $('cue'), elTimer = $('timer'),
       elGateList = $('gateList'), elStart = $('startBtn'), elStop = $('stopBtn'),
       elExport = $('exportBtn'), elSummary = $('summary'), elCopy = $('copyBtn'),
       elFlip = $('flipBtn'), elVoice = $('voiceBtn'),
-      elPrev = $('prevBtn'), elNext = $('nextBtn');
+      elPrev = $('prevBtn'), elNext = $('nextBtn'), elCamInfo = $('camInfo');
 
 let landmarker = null, stream = null, running = false, lastVideoTime = -1;
 let order = [], idx = 0, state = 'idle';
@@ -175,8 +175,10 @@ function buildOrder() {
 function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.1',
-                         camera: facing, order: order.map(p => p.id) }, poses: [] };
+  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.2',
+                         camera: facing,
+                         resolution: `${video.videoWidth}x${video.videoHeight}`,
+                         order: order.map(p => p.id) }, poses: [] };
   elStart.disabled = true; elStop.disabled = false; elSummary.textContent = '';
   elPrev.disabled = false; elNext.disabled = false;
   loadPose();
@@ -253,6 +255,7 @@ function loop() {
   if (!running) return;
   requestAnimationFrame(loop);
   if (!landmarker || video.readyState < 2) return;
+  syncOverlay();
   if (video.currentTime === lastVideoTime) return;
   lastVideoTime = video.currentTime;
 
@@ -329,22 +332,63 @@ function setCamLabel() {
   elFlip.textContent = facing === 'user' ? 'CAM: FRONT' : 'CAM: REAR';
 }
 
+// Keep the overlay canvas exactly the size of the video. Called every frame
+// because a camera flip, a rotation, or a late metadata event can change the
+// video dimensions under us.
+function syncOverlay() {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return false;
+  if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
+  return true;
+}
+
 async function attachStream() {
   if (stream) stream.getTracks().forEach(t => t.stop());
-  stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
-    audio: false,
-  });
+
+  // ⚠️ 16:9 IS A CROP OF THE NATIVE 4:3 SENSOR.
+  // Almost every phone camera reads out 4:3; asking for 16:9 (was 1280x720)
+  // discards the top and bottom of the frame. For a head-to-toe pose that is
+  // exactly the wrong axis to throw away — it is why the athlete has to stand
+  // further back than the room requires.
+  // ⇒ Request 4:3 at high resolution, then fall back gracefully if the device
+  //    will not honour it.
+  const base = { facingMode: { ideal: facing } };
+  const tries = [
+    { ...base, width: { ideal: 1440 }, height: { ideal: 1080 }, aspectRatio: { ideal: 4 / 3 } },
+    { ...base, width: { ideal: 1440 }, height: { ideal: 1080 } },
+    { ...base },
+  ];
+  let lastErr = null;
+  for (const v of tries) {
+    try { stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false }); break; }
+    catch (e) { lastErr = e; }
+  }
+  if (!stream) throw lastErr || new Error('no camera');
+
   video.srcObject = stream;
-  await video.play();
-  overlay.width = video.videoWidth || 1280;
-  overlay.height = video.videoHeight || 720;
+  // ⚠️ WAIT FOR REAL DIMENSIONS. On a camera FLIP the element briefly reports
+  // 0x0, and sizing the overlay from that leaves the canvas at 2x2 — the
+  // skeleton then draws into a two-pixel box and the whole view goes dead.
+  // This is exactly what the first v1.2 build did.
+  await new Promise(res => {
+    if (video.videoWidth) return res();
+    const done = () => { video.removeEventListener('loadedmetadata', done); res(); };
+    video.addEventListener('loadedmetadata', done);
+    setTimeout(res, 1500);
+  });
+  try { await video.play(); } catch (_) { /* autoplay race, loop will retry */ }
+  syncOverlay();
   lastVideoTime = -1;
 
-  // Report what the device ACTUALLY gave us — if the flip silently fails, the
-  // label will show it rather than leaving him guessing.
-  const st = stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings();
-  if (st && st.facingMode) facing = st.facingMode;
+  // Report what the device ACTUALLY gave us — camera, resolution and shape.
+  // If a phone hands back a 16:9 crop despite the 4:3 request, this shows it.
+  const tr = stream.getVideoTracks()[0];
+  const st = (tr && tr.getSettings && tr.getSettings()) || {};
+  if (st.facingMode) facing = st.facingMode;
+  const w = st.width || video.videoWidth, h = st.height || video.videoHeight;
+  const ratio = (w && h) ? (w / h).toFixed(2) : '?';
+  const shape = Math.abs(w / h - 4 / 3) < 0.08 ? '4:3' : (Math.abs(w / h - 16 / 9) < 0.08 ? '16:9' : ratio);
+  elCamInfo.textContent = `${facing === 'user' ? 'FRONT' : 'REAR'} · ${w}×${h} · ${shape}`;
   setCamLabel();
 }
 
