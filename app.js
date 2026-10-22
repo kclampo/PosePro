@@ -51,7 +51,52 @@ let session = null, currentRecord = null;
 // set-time and transition-time stay comparable even if the athlete pauses.
 let t0 = 0;
 
-// ── persisted prefs ──────────────────────────────────────────────────────
+// ── light meter ──────────────────────────────────────────────────────────
+// MEASURED, NOT GUESSED (2026-10-22). Two tests on known-good stage frames:
+//   1. Clean darkening: MediaPipe still found the athlete at mean luma ~11.
+//      So "darkness" alone barely matters — the camera's own auto-exposure
+//      keeps the delivered frame usable.
+//   2. Dark + NOISE is what actually kills it. At luma 33 with sensor noise
+//      sigma 16, detection failed 3/3. At luma 24 with sigma 8 it passed 3/3.
+//   ⚠️ NEITHER statistic predicts failure on its own: detected frames ran
+//   luma 24-82, failed frames 26-51 — the ranges OVERLAP. There is no single
+//   scalar threshold, so this meter does NOT hard-gate anything.
+// What it does instead: report the numbers, and DISAMBIGUATE the message when
+// the landmarker cannot see the athlete — "too dark" vs "step into frame".
+const LIGHT_LUMA_DIM = 45;      // below this, and we suspect the room
+const lightCv = document.createElement('canvas');
+lightCv.width = 64; lightCv.height = 48;
+const lightCtx = lightCv.getContext('2d', { willReadFrequently: true });
+let light = { luma: null, noise: null };
+let camBase = '';
+
+function sampleLight() {
+  if (!video.videoWidth) return;
+  try {
+    lightCtx.drawImage(video, 0, 0, lightCv.width, lightCv.height);
+    const d = lightCtx.getImageData(0, 0, lightCv.width, lightCv.height).data;
+    const W = lightCv.width, H = lightCv.height;
+    const g = new Float32Array(W * H);
+    let sum = 0;
+    for (let i = 0, p = 0; p < g.length; i += 4, p++) {
+      const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      g[p] = y; sum += y;
+    }
+    let lap = 0, c = 0;
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x;
+      lap += Math.abs(4 * g[i] - g[i - W] - g[i + W] - g[i - 1] - g[i + 1]);
+      c++;
+    }
+    light = { luma: +(sum / g.length).toFixed(1), noise: +(lap / c).toFixed(2) };
+    if (camBase) {
+      const tag = light.luma < LIGHT_LUMA_DIM ? 'DIM' : 'OK';
+      elCamInfo.textContent = `${camBase} · LIGHT ${light.luma} ${tag}`;
+    }
+  } catch (_) { /* frame not ready */ }
+}
+setInterval(sampleLight, 500);
+
 // localStorage, NOT a cookie. This app never talks to a server, so a cookie
 // would be transmitted on every request for no benefit and capped at ~4KB.
 // localStorage is per-origin, survives closing the app, and works offline.
@@ -245,7 +290,7 @@ function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
   t0 = performance.now();
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8.1',
+  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8.2',
                          started_at: new Date().toISOString(),
                          camera: facing,
                          resolution: `${video.videoWidth}x${video.videoHeight}`,
@@ -300,6 +345,10 @@ function commitCurrent(skipped, advance) {
     // Without this label the two are indistinguishable in the history and any
     // trend on transition_seconds would be meaningless.
     currentRecord.advance = advance || 'auto';
+    // Light at commit time. Recorded so v2.0's PROGRESS tab can flag sessions
+    // shot in poor light — a dim/noisy session has unreliable set_seconds and
+    // must NOT be compared against a clean one.
+    currentRecord.light = (light.luma != null) ? { luma: light.luma, noise: light.noise } : null;
     currentRecord.t_end = Math.round(performance.now() - t0);
     // set-time: how long it took to find the pose window
     if (Number.isFinite(currentRecord.t_start) && Number.isFinite(currentRecord.t_green)) {
@@ -390,7 +439,15 @@ function loop() {
     readySpoken = false;
     const cue = pickCue(gates, m);
     if (cue) { elCue.textContent = cue; elCue.className = 'cue bad'; }
-    elReady.textContent = m.vis > 0.5 ? 'NOT YET' : 'STEP INTO FRAME';
+    // Disambiguate WHY he isn't being seen. The landmarker failing is the real
+    // signal; luma only breaks the tie between "wrong place" and "wrong room".
+    if (m.vis > 0.5) {
+      elReady.textContent = 'NOT YET';
+    } else if (light.luma != null && light.luma < LIGHT_LUMA_DIM) {
+      elReady.textContent = `TOO DARK (${Math.round(light.luma)}) — ADD LIGHT`;
+    } else {
+      elReady.textContent = 'STEP INTO FRAME';
+    }
     elReady.className = 'ready wait';
     maybeSpeakCue(cue, now);
     // hold clock PAUSES, does not reset
@@ -502,8 +559,8 @@ async function attachStream() {
               : Math.abs(ar - 3 / 2) < 0.08 ? '3:2'
               : (w && h ? (long / short).toFixed(2) : '?');
   const orient = h > w ? 'PORTRAIT' : 'LANDSCAPE';
-  elCamInfo.textContent =
-    `${liveFacing === 'user' ? 'FRONT' : 'REAR'} · ${w}×${h} · ${shape} ${orient}`;
+  camBase = `${liveFacing === 'user' ? 'FRONT' : 'REAR'} · ${w}×${h} · ${shape} ${orient}`;
+  elCamInfo.textContent = camBase;   // the light sampler appends "· LIGHT <luma> OK|DIM"
   setCamLabel();
 }
 

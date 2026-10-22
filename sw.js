@@ -3,10 +3,11 @@
  *
  * ⚠️ BUMP CACHE ON EVERY DEPLOY. The fetch handler is cache-first, so an
  * unchanged cache name means installed PWAs keep serving the OLD app forever.
- * v9 = v1.8.1 (record whether each pose advance was auto or manual, so
- *            transition_seconds is interpretable; auto = fixed ~0.70s constant).
+ * v10 = v1.8.2 (light meter: reports mean luma + a noise proxy in the camera
+ *             line, disambiguates "TOO DARK" from "STEP INTO FRAME", and
+ *             records the reading per pose so dim sessions can be flagged).
  */
-const CACHE = 'titan-pose-v9';
+const CACHE = 'titan-pose-v10';
 const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
