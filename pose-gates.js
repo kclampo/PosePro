@@ -162,6 +162,88 @@ const GATES = {
           cueHigh: 'Raise your {side} elbow to match' },
       ],
     },
+
+    // ── v1.7 ADDITIONS ───────────────────────────────────────────────────
+    // Most Muscular is a FREE pose in the rulebook ("favourite most-muscular
+    // pose, when requested") so it can NEVER be auto-detected — elbowAbove puts
+    // it entirely inside the front-lat-spread band. The app DECLARES it, which
+    // is why the athlete is told the variant to hit.
+    {
+      id: 'most_muscular',
+      label: 'Most Muscular (hands clasped)',
+      facing: 'FRONT',
+      order: 8,
+      cues: [
+        'Hands CLASPED in front of your lower chest',
+        'Drive both elbows OUT and slightly DOWN',
+        'Push your chest TOWARD the camera',
+      ],
+      gates: [
+        // Band from 6 placed stage athletes, two independent measurement
+        // methods agreeing within 0.03 torso-lengths:
+        //   Abarca (50+ HW) / Cooley (35+ SHW) / Taylor (50+ LW)
+        //   Pearson / Garcia / Clarida (2026 Mr Olympia 212)
+        { id: 'elbow_below', measure: 'elbowAbove', min: -0.61, max: -0.39, status: 'confirmed',
+          label: 'Elbows below the shoulder line',
+          cueLow: 'Elbows too LOW — drive them UP toward shoulder height',
+          cueHigh: 'Elbows too HIGH — drive them DOWN and OUT' },
+        { id: 'elbow_angle', measure: 'elbowAngle', min: 69, max: 101, status: 'confirmed',
+          label: 'Elbows bent',
+          cueLow: 'Bend your elbows more — bring the clasp closer in',
+          cueHigh: 'Open the elbows out a little' },
+        { id: 'symmetry', measure: 'elbowAsym', min: 0, max: 10, status: 'confirmed', sideAware: true,
+          label: 'Left and right even',
+          cueHigh: 'Match your {side} elbow to the other side' },
+        { id: 'shoulder_level', measure: 'shoulderTilt', min: -3, max: 3, status: 'confirmed',
+          label: 'Shoulders level',
+          cueLow: 'Drop your high shoulder',
+          cueHigh: 'Drop your high shoulder' },
+        { id: 'manual_clasp', measure: 'manual', status: 'manual',
+          label: 'Hands actually clasped, chest pushed forward (your eyes)' },
+      ],
+    },
+
+    // Quarter turns are RELAXED symmetry-round poses, not mandatories.
+    // Only the side-on gate is verified (side poses read spanTorso <=0.50 vs
+    // >=0.90 front/back). Everything else here is ESTIMATED — session 1 tunes it.
+    // NOTE: the app says which turn to make, so left vs right never has to be
+    // inferred from landmarks.
+    {
+      id: 'quarter_turn_right',
+      label: 'Quarter Turn — Right',
+      facing: 'SIDE',
+      order: 9,
+      cues: ['Stand TALL and relaxed', 'Turn so your RIGHT side faces the camera', 'Arms hang, no flexing'],
+      gates: [
+        { id: 'side_on', measure: 'spanTorso', min: 0, max: 0.70, status: 'confirmed',
+          label: 'Turned side-on',
+          cueHigh: 'Turn further — you are still too square to the camera' },
+        { id: 'shoulder_level', measure: 'shoulderTilt', min: -3, max: 3, status: 'estimated',
+          label: 'Shoulders level',
+          cueLow: 'Drop your high shoulder',
+          cueHigh: 'Drop your high shoulder' },
+        { id: 'manual_posture', measure: 'manual', status: 'manual',
+          label: 'Tall, relaxed, standing leg set (your eyes)' },
+      ],
+    },
+    {
+      id: 'quarter_turn_left',
+      label: 'Quarter Turn — Left',
+      facing: 'SIDE',
+      order: 10,
+      cues: ['Stand TALL and relaxed', 'Turn so your LEFT side faces the camera', 'Arms hang, no flexing'],
+      gates: [
+        { id: 'side_on', measure: 'spanTorso', min: 0, max: 0.70, status: 'confirmed',
+          label: 'Turned side-on',
+          cueHigh: 'Turn further — you are still too square to the camera' },
+        { id: 'shoulder_level', measure: 'shoulderTilt', min: -3, max: 3, status: 'estimated',
+          label: 'Shoulders level',
+          cueLow: 'Drop your high shoulder',
+          cueHigh: 'Drop your high shoulder' },
+        { id: 'manual_posture', measure: 'manual', status: 'manual',
+          label: 'Tall, relaxed, standing leg set (your eyes)' },
+      ],
+    },
   ],
 };
 
