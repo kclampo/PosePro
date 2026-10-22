@@ -47,6 +47,9 @@ let landmarker = null, stream = null, running = false, lastVideoTime = -1;
 let order = [], idx = 0, state = 'idle';
 let greenRunStart = 0, holdAccum = 0, lastTick = 0;
 let session = null, currentRecord = null;
+// Session t0. Everything timing-related is milliseconds since this moment, so
+// set-time and transition-time stay comparable even if the athlete pauses.
+let t0 = 0;
 
 // ── persisted prefs ──────────────────────────────────────────────────────
 // localStorage, NOT a cookie. This app never talks to a server, so a cookie
@@ -241,7 +244,9 @@ function buildOrder() {
 function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.3',
+  t0 = performance.now();
+  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8',
+                         started_at: new Date().toISOString(),
                          camera: facing,
                          resolution: `${video.videoWidth}x${video.videoHeight}`,
                          order: order.map(p => p.id) }, poses: [] };
@@ -267,7 +272,15 @@ function loadPose() {
     `<li data-g="${g.id}"><span class="dot"></span>${g.label}` +
     `<em class="${g.status}">${g.status === 'manual' ? 'you judge' : g.status}</em></li>`).join('');
   currentRecord = { pose: p.id, label: p.label, facing: p.facing,
-                    hold_seconds: 0, attempts: 1, skipped: false, gates: [] };
+                    hold_seconds: 0, attempts: 1, skipped: false, gates: [],
+                    // ── v1.8 timing: the two metrics that show FLAWLESS FLOW ──
+                    // t_start  : when this pose was put on screen
+                    // t_green  : first frame where EVERY gate passed
+                    // set_seconds      = t_green - t_start   "how fast I got in the window"
+                    // transition_seconds = t_start - previous t_end   "how fast I reset"
+                    t_start: Math.round(performance.now() - t0),
+                    t_green: null, t_end: null,
+                    set_seconds: null, transition_seconds: null };
   announcePose(p);
 }
 
@@ -278,6 +291,16 @@ function commitCurrent(skipped) {
   if (holdAccum > 300) {
     currentRecord.hold_seconds = +(holdAccum / 1000).toFixed(2);
     currentRecord.skipped = !!skipped;
+    currentRecord.t_end = Math.round(performance.now() - t0);
+    // set-time: how long it took to find the pose window
+    if (Number.isFinite(currentRecord.t_start) && Number.isFinite(currentRecord.t_green)) {
+      currentRecord.set_seconds = +((currentRecord.t_green - currentRecord.t_start) / 1000).toFixed(2);
+    }
+    // transition-time: the gap from the PREVIOUS pose locking to this one starting
+    const prev = session.poses[session.poses.length - 1];
+    if (prev && Number.isFinite(prev.t_end) && Number.isFinite(currentRecord.t_start)) {
+      currentRecord.transition_seconds = +((currentRecord.t_start - prev.t_end) / 1000).toFixed(2);
+    }
     session.poses.push(currentRecord);
   }
   currentRecord = null;
@@ -363,7 +386,14 @@ function loop() {
     maybeSpeakCue(cue, now);
     // hold clock PAUSES, does not reset
   } else {
-    if (!greenRunStart) greenRunStart = now;
+    if (!greenRunStart) {
+      greenRunStart = now;
+      // v1.8 — stamp the FIRST all-green frame of this pose. This is the
+      // "how quickly did I find the window" metric; it is per-session-t0.
+      if (currentRecord && currentRecord.t_green == null) {
+        currentRecord.t_green = Math.round(performance.now() - t0);
+      }
+    }
     const greenFor = now - greenRunStart;
     if (greenFor >= READY_MS) {
       holdAccum += dt;
@@ -532,7 +562,9 @@ function summaryText() {
     const g = p.gates.filter(x => x.target !== 'manual');
     const pg = g.filter(x => x.pass).length;
     pass += pg; total += g.length;
-    lines.push(`${p.label}${p.skipped ? ' (skipped)' : ''}: held ${p.hold_seconds}s · ${pg}/${g.length} gates`);
+    lines.push(`${p.label}${p.skipped ? ' (skipped)' : ''}: held ${p.hold_seconds}s · ${pg}/${g.length} gates` +
+      (p.set_seconds != null ? ` · set ${p.set_seconds}s` : '') +
+      (p.transition_seconds != null ? ` · reset ${p.transition_seconds}s` : ''));
     g.filter(x => !x.pass).forEach(x => lines.push(`   ✗ ${x.name} = ${x.value} (target ${x.target})`));
   });
   lines.push(`TOTAL: ${pass}/${total} gates passed`);

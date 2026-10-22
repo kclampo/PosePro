@@ -3,10 +3,10 @@
  *
  * ⚠️ BUMP CACHE ON EVERY DEPLOY. The fetch handler is cache-first, so an
  * unchanged cache name means installed PWAs keep serving the OLD app forever.
- * v7 = v1.7 (Most Muscular added with the 6-athlete cross-validated band;
- *            two quarter turns added, all-estimated except the side-on gate).
+ * v8 = v1.8 (session timing capture: t_start/t_green/t_end per pose, derived
+ *            set_seconds + transition_seconds — the FLAWLESS FLOW metrics).
  */
-const CACHE = 'titan-pose-v7';
+const CACHE = 'titan-pose-v8';
 const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
