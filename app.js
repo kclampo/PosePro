@@ -1,4 +1,4 @@
-/* app.js — TITAN POSE v1.2 — real-time posing gate trainer
+/* app.js — TITAN POSE v1.3 — real-time posing gate trainer
  *
  * Runs 100% on-device. No network calls after load. No credentials.
  * MediaPipe Pose Landmarker (WASM/GPU) -> body-relative measurements -> gates -> green/red.
@@ -26,6 +26,7 @@ const MP_MODEL =
 const HOLD_MS = 10_000;      // required green hold
 const READY_MS = 800;        // must be green this long before the hold clock starts
 const CUE_REPEAT_MS = 6_000; // never repeat the same spoken cue faster than this
+const SPEAK_MIN_GAP  = 2_200; // hard floor between ANY two spoken cues
 const OUT_OF_FRAME_MS = 8_000;
 
 // ── landmarks ────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ let session = null, currentRecord = null;
 
 let facing = 'environment';   // 'environment' = rear, 'user' = front
 let voiceOn = true;
-let lastCueSpoken = '', lastCueAt = 0, readySpoken = false, outFrameAt = 0;
+let lastCueSpoken = '', lastCueAt = 0, lastSpeakAt = 0, readySpoken = false, outFrameAt = 0;
 
 // ── geometry ─────────────────────────────────────────────────────────────
 const angle = (a, b, c) => {
@@ -80,13 +81,53 @@ function measure(lm) {
   };
 }
 
+// ── temporal smoothing ───────────────────────────────────────────────────
+// ⚠️ THE POSE LANDMARKER IS NOISY FRAME TO FRAME. A single-frame tolerance is
+// not a tolerance on the ATHLETE, it is a tolerance on the MODEL. With +/-4 deg
+// on the symmetry gate, landmark jitter alone can flip green/red several times
+// a second — the athlete then chases a target that is moving without them.
+// ⇒ Median of the last SMOOTH_N frames. Median, not mean: one wild frame cannot
+//   drag the value, so a single bad landmark read is simply ignored.
+const SMOOTH_N = 9;
+let mbuf = [];
+
+function resetSmooth() { mbuf = []; }
+
+function smooth(m) {
+  mbuf.push(m);
+  if (mbuf.length > SMOOTH_N) mbuf.shift();
+  const out = {};
+  for (const k in m) {
+    const vals = mbuf.map(x => x[k]).filter(Number.isFinite).sort((a, b) => a - b);
+    out[k] = vals.length ? vals[vals.length >> 1] : m[k];
+  }
+  return out;
+}
+
 // ── gate evaluation ──────────────────────────────────────────────────────
+// HYSTERESIS: once a gate goes green it STAYS green until the value leaves the
+// band by HYST_FRAC of the band width. A gate that flickers at the boundary can
+// never accumulate the 10 s hold, which is exactly the "never could lock"
+// symptom on Back Double Biceps (2026-10-22).
+const HYST_FRAC = 0.15;
+const gatePrev = {};
+
+function resetGates() { for (const k in gatePrev) delete gatePrev[k]; }
+
 function evaluate(pose, m) {
   return pose.gates.map(g => {
     if (g.measure === 'manual')
       return { ...g, value: null, pass: manualTicked[g.id] !== false, manual: true };
     const v = m[g.measure];
-    const ok = Number.isFinite(v) && v >= g.min && v <= g.max;
+    let ok = false;
+    if (Number.isFinite(v)) {
+      const span = (g.max - g.min) || 1;
+      const h = span * HYST_FRAC;
+      ok = (gatePrev[g.id] === true)
+        ? (v >= g.min - h && v <= g.max + h)     // sticky while green
+        : (v >= g.min && v <= g.max);            // must be clean to enter
+    }
+    gatePrev[g.id] = ok;
     return { ...g, value: v, pass: ok };
   });
 }
@@ -128,8 +169,14 @@ function announcePose(p) {
 
 function maybeSpeakCue(cue, now) {
   if (!cue) return;
+  // ⚠️ HARD FLOOR BETWEEN ANY TWO UTTERANCES.
+  // The symmetry cue names a side, so when the athlete rocks between the two
+  // elbows the TEXT alternates — and `cue !== lastCueSpoken` is then true every
+  // frame, which defeated the repeat throttle entirely and queued a continuous
+  // stream of speech. The floor is what actually stops the chatter.
+  if (now - lastSpeakAt < SPEAK_MIN_GAP) return;
   if (cue === lastCueSpoken && now - lastCueAt < CUE_REPEAT_MS) return;
-  lastCueSpoken = cue; lastCueAt = now;
+  lastCueSpoken = cue; lastCueAt = now; lastSpeakAt = now;
   speak(cue);
 }
 
@@ -175,7 +222,7 @@ function buildOrder() {
 function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.2',
+  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.3',
                          camera: facing,
                          resolution: `${video.videoWidth}x${video.videoHeight}`,
                          order: order.map(p => p.id) }, poses: [] };
@@ -188,7 +235,8 @@ function loadPose() {
   if (idx >= order.length) return finishSession();
   const p = order[idx];
   greenRunStart = 0; holdAccum = 0; lastTick = performance.now();
-  lastCueSpoken = ''; readySpoken = false; outFrameAt = 0;
+  lastCueSpoken = ''; readySpoken = false; outFrameAt = 0; lastSpeakAt = 0;
+  resetSmooth(); resetGates();
   elPose.textContent = p.label;
   elCue.textContent = p.cues.join(' · ');
   elCue.className = 'cue';
@@ -275,7 +323,7 @@ function loop() {
   }
 
   const pose = order[idx];
-  const m = measure(lm);
+  const m = smooth(measure(lm));   // median-smoothed: see the smoothing block
   const gates = evaluate(pose, m);
 
   // per-gate UI
@@ -386,9 +434,18 @@ async function attachStream() {
   const st = (tr && tr.getSettings && tr.getSettings()) || {};
   if (st.facingMode) facing = st.facingMode;
   const w = st.width || video.videoWidth, h = st.height || video.videoHeight;
-  const ratio = (w && h) ? (w / h).toFixed(2) : '?';
-  const shape = Math.abs(w / h - 4 / 3) < 0.08 ? '4:3' : (Math.abs(w / h - 16 / 9) < 0.08 ? '16:9' : ratio);
-  elCamInfo.textContent = `${facing === 'user' ? 'FRONT' : 'REAR'} · ${w}×${h} · ${shape}`;
+  // Orientation-independent shape label. A phone commonly returns the 4:3
+  // request ROTATED (Kevin got 1080x1440 on 2026-10-22) — that is 3:4 PORTRAIT
+  // and is the ideal full-body frame, so it must not read as "0.75".
+  const long = Math.max(w, h), short = Math.min(w, h);
+  const ar = short ? long / short : 0;
+  const shape = Math.abs(ar - 4 / 3) < 0.08 ? '4:3'
+              : Math.abs(ar - 16 / 9) < 0.08 ? '16:9'
+              : Math.abs(ar - 3 / 2) < 0.08 ? '3:2'
+              : (w && h ? (long / short).toFixed(2) : '?');
+  const orient = h > w ? 'PORTRAIT' : 'LANDSCAPE';
+  elCamInfo.textContent =
+    `${facing === 'user' ? 'FRONT' : 'REAR'} · ${w}×${h} · ${shape} ${orient}`;
   setCamLabel();
 }
 

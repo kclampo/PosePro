@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<title>TITAN MEASURE</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <h1>TITAN <span>MEASURE</span></h1>
+  <div id="dateLbl" class="count">—</div>
+</header>
+
+<nav class="tabs">
+  <a href="./">POSE</a>
+  <a href="measure.html" class="on">MEASURE</a>
+</nav>
+
+<section class="panel">
+
+  <h2>Tape <span class="h2sub">inches</span></h2>
+  <div class="grid2" id="tape"></div>
+  <p class="hint" id="tapeWarn"></p>
+
+  <h2>Caliper <span class="h2sub">6 sites · 3 reads · median</span></h2>
+  <div id="sites"></div>
+
+  <div class="exportbox">
+    <h3>Result <button id="copyBtn" class="mini">Copy for WhatsApp</button></h3>
+    <pre id="out">—</pre>
+  </div>
+
+  <div class="notes">
+    <p><strong>Cold · fasted · AM · pre-shower.</strong> Never after training, never after a shower — hydrated skin reads <em>thick</em>.</p>
+    <p><strong>NECK IS PEGGED AT 18.00</strong> — measure below the larynx or not at all. Anything above the larynx reads 18.75 and is a trap artefact.</p>
+    <p><strong>Rotate 1→6, then repeat ×3.</strong> Never three in a row at one site — the pinch pushes fluid and readings drift down.</p>
+    <p><strong>Photograph the marks.</strong> Re-mark from last month's photo, not from memory.</p>
+    <p><strong>Red = out of range.</strong> That means a typo, a decimal slip, or mm entered instead of inches. Re-read before you send it.</p>
+  </div>
+
+</section>
+
+<script src="measure.js"></script>
+<script>
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>

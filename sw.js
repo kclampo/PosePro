@@ -3,10 +3,10 @@
  *
  * ⚠️ BUMP CACHE ON EVERY DEPLOY. The fetch handler is cache-first, so an
  * unchanged cache name means installed PWAs keep serving the OLD app forever.
- * v3 = v1.2 (4:3 camera request instead of 16:9, live resolution readout).
+ * v5 = v1.4 (MEASURE tab added: tape guardrails + JP-3 caliper capture).
  */
-const CACHE = 'titan-pose-v3';
-const SHELL = ['./', './index.html', './styles.css', './app.js', './pose-gates.js', './manifest.json', './icon.svg'];
+const CACHE = 'titan-pose-v5';
+const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
