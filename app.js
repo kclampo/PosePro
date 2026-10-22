@@ -48,8 +48,27 @@ let order = [], idx = 0, state = 'idle';
 let greenRunStart = 0, holdAccum = 0, lastTick = 0;
 let session = null, currentRecord = null;
 
-let facing = 'environment';   // 'environment' = rear, 'user' = front
-let voiceOn = true;
+// ── persisted prefs ──────────────────────────────────────────────────────
+// localStorage, NOT a cookie. This app never talks to a server, so a cookie
+// would be transmitted on every request for no benefit and capped at ~4KB.
+// localStorage is per-origin, survives closing the app, and works offline.
+//
+// ⚠️ `facing` is the user's INTENT and is what gets persisted. The device's
+// reported facingMode is kept separately in `liveFacing`. Previously the
+// report overwrote `facing` (old line 435), which meant any phone that
+// misreports facingMode left the FLIP button toggling off a polluted value —
+// so a flip could silently no-op. Intent must never be written by the device.
+const PREF_KEY = 'titan_pose_prefs_v1';
+function loadPrefs(){
+  try { return JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch { return {}; }
+}
+function savePrefs(patch){
+  try { localStorage.setItem(PREF_KEY, JSON.stringify(Object.assign(loadPrefs(), patch))); } catch {}
+}
+const prefs = loadPrefs();
+let facing = (prefs.facing === 'user' || prefs.facing === 'environment') ? prefs.facing : 'environment';
+let liveFacing = facing;          // what the DEVICE actually gave us, for the label only
+let voiceOn = prefs.voiceOn !== false;
 let lastCueSpoken = '', lastCueAt = 0, lastSpeakAt = 0, readySpoken = false, outFrameAt = 0;
 
 // ── geometry ─────────────────────────────────────────────────────────────
@@ -432,7 +451,7 @@ async function attachStream() {
   // If a phone hands back a 16:9 crop despite the 4:3 request, this shows it.
   const tr = stream.getVideoTracks()[0];
   const st = (tr && tr.getSettings && tr.getSettings()) || {};
-  if (st.facingMode) facing = st.facingMode;
+  if (st.facingMode) liveFacing = st.facingMode;   // label only — never write intent
   const w = st.width || video.videoWidth, h = st.height || video.videoHeight;
   // Orientation-independent shape label. A phone commonly returns the 4:3
   // request ROTATED (Kevin got 1080x1440 on 2026-10-22) — that is 3:4 PORTRAIT
@@ -445,7 +464,7 @@ async function attachStream() {
               : (w && h ? (long / short).toFixed(2) : '?');
   const orient = h > w ? 'PORTRAIT' : 'LANDSCAPE';
   elCamInfo.textContent =
-    `${facing === 'user' ? 'FRONT' : 'REAR'} · ${w}×${h} · ${shape} ${orient}`;
+    `${liveFacing === 'user' ? 'FRONT' : 'REAR'} · ${w}×${h} · ${shape} ${orient}`;
   setCamLabel();
 }
 
@@ -481,6 +500,7 @@ async function flipCamera() {
     try { await attachStream(); } catch (_) { console.error(e); }
   } finally {
     elFlip.disabled = !running || !stream;
+    savePrefs({ facing });        // remember the choice — survives closing the app
   }
 }
 
@@ -548,6 +568,7 @@ elNext.addEventListener('click', nextPose);
 elVoice.addEventListener('click', () => {
   voiceOn = !voiceOn;
   elVoice.textContent = voiceOn ? 'VOICE: ON' : 'VOICE: OFF';
+  savePrefs({ voiceOn });
   if (speechOK) speechSynthesis.cancel();
   if (voiceOn) speak('Voice on.');
 });
@@ -558,4 +579,5 @@ elCopy.addEventListener('click', async () => {
   setTimeout(() => elCopy.textContent = 'Copy summary', 1500);
 });
 elExport.disabled = true;
+elVoice.textContent = voiceOn ? 'VOICE: ON' : 'VOICE: OFF';   // reflect the SAVED state
 setCamLabel();

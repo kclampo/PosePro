@@ -3,9 +3,10 @@
  *
  * ⚠️ BUMP CACHE ON EVERY DEPLOY. The fetch handler is cache-first, so an
  * unchanged cache name means installed PWAs keep serving the OLD app forever.
- * v5 = v1.4 (MEASURE tab added: tape guardrails + JP-3 caliper capture).
+ * v6 = v1.6 (camera facing + voice persisted in localStorage; device-facingMode
+ *            no longer overwrites user intent, which could make FLIP no-op).
  */
-const CACHE = 'titan-pose-v5';
+const CACHE = 'titan-pose-v6';
 const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
