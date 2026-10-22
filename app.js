@@ -245,7 +245,7 @@ function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
   t0 = performance.now();
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8',
+  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8.1',
                          started_at: new Date().toISOString(),
                          camera: facing,
                          resolution: `${video.videoWidth}x${video.videoHeight}`,
@@ -286,11 +286,20 @@ function loadPose() {
 
 // Commit the pose in progress. Partial holds are kept — a skipped pose still
 // carries information for calibration.
-function commitCurrent(skipped) {
+function commitCurrent(skipped, advance) {
   if (!session || !currentRecord) { currentRecord = null; return; }
   if (holdAccum > 300) {
     currentRecord.hold_seconds = +(holdAccum / 1000).toFixed(2);
     currentRecord.skipped = !!skipped;
+    // WHY THIS FIELD EXISTS (v1.8.1):
+    // transition_seconds is only meaningful when the ATHLETE drives the change.
+    //  - 'auto'   : finishPose() advances via setTimeout(loadPose, 700), so the
+    //               gap is a near-constant ~0.70s. That measures the app.
+    //  - 'manual' : next/prev call loadPose() immediately, so the gap is real
+    //               time the athlete took to reset. That measures the athlete.
+    // Without this label the two are indistinguishable in the history and any
+    // trend on transition_seconds would be meaningless.
+    currentRecord.advance = advance || 'auto';
     currentRecord.t_end = Math.round(performance.now() - t0);
     // set-time: how long it took to find the pose window
     if (Number.isFinite(currentRecord.t_start) && Number.isFinite(currentRecord.t_green)) {
@@ -307,7 +316,7 @@ function commitCurrent(skipped) {
 }
 
 function finishPose() {
-  commitCurrent(false);
+  commitCurrent(false, 'auto');
   state = 'pose'; idx++;
   setTimeout(loadPose, 700);
 }
@@ -315,21 +324,21 @@ function finishPose() {
 // FIX 2 — manual navigation, works at any time during a pose.
 function nextPose() {
   if (!session) return;
-  commitCurrent(true);
+  commitCurrent(true, 'manual');
   if (idx + 1 >= order.length) return finishSession();
   idx++; loadPose();
 }
 
 function prevPose() {
   if (!session) return;
-  commitCurrent(true);
+  commitCurrent(true, 'manual');
   if (idx > 0) idx--;          // at the first pose, just restart it
   loadPose();
 }
 
 function finishSession() {
   state = 'done';
-  commitCurrent(true);
+  commitCurrent(true, 'end');
   stopCamera();
   elReady.textContent = 'SESSION COMPLETE'; elReady.className = 'ready ok';
   elPose.textContent = 'Done'; elCue.textContent = '';
@@ -564,7 +573,9 @@ function summaryText() {
     pass += pg; total += g.length;
     lines.push(`${p.label}${p.skipped ? ' (skipped)' : ''}: held ${p.hold_seconds}s · ${pg}/${g.length} gates` +
       (p.set_seconds != null ? ` · set ${p.set_seconds}s` : '') +
-      (p.transition_seconds != null ? ` · reset ${p.transition_seconds}s` : ''));
+      (p.transition_seconds != null
+        ? ` · reset ${p.transition_seconds}s${p.advance && p.advance !== 'auto' ? ' (' + p.advance + ')' : ' (auto)'}`
+        : ''));
     g.filter(x => !x.pass).forEach(x => lines.push(`   ✗ ${x.name} = ${x.value} (target ${x.target})`));
   });
   lines.push(`TOTAL: ${pass}/${total} gates passed`);
