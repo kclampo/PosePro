@@ -58,6 +58,25 @@ const READY_MS = 800;        // must be green this long before the hold clock st
 // a performed pose — it records the doubt instead of hiding it.
 const MIN_SETTLE_MS      = 1200;
 const STALE_FALLBACK_MS  = 3500;
+
+// ── v1.8.6 FRAMING PRE-GATE ──────────────────────────────────────────────
+// Measured on the 2026-10-22 check-in (11 photos, 3024x4032):
+//   legVis = min(knee, ankle) was 1.00 back relaxed · 0.88 front lat spread ·
+//   0.53 front double · 0.60 most muscular · but only 0.10 ABS & THIGH.
+//   Side poses occlude the far knee in profile (side bicep 0.41, side vacuum
+//   0.35), so a side pose is judged on the ANKLE alone (0.60 / 0.49 / 0.15).
+// A framing failure must never be reported as a physique failure, and unlike a
+// physique problem it is FIXABLE — tilt the phone, step back — so it blocks the
+// hold rather than merely warning.
+const LEG_VIS_MIN    = 0.50;   // front/back: knees AND ankles must be visible
+const SIDE_ANKLE_MIN = 0.30;   // side: ankle only; the far knee is occluded
+
+// ── v1.8.6 LEG ADVISORY ──────────────────────────────────────────────────
+// MediaPipe has no muscle landmarks, so this CANNOT gate a quad contraction.
+// It is recorded and reported so drift is visible across sessions. His measured
+// baseline (2026-10-22): fronts 174.7-179.6 deg, backs 177.4-177.9 deg.
+const KNEE_BAND      = { min: 170, max: 180 };   // advisory only
+const KNEE_ASYM_MAX  = 8;                        // advisory only
 const CUE_REPEAT_MS = 6_000; // never repeat the same spoken cue faster than this
 const SPEAK_MIN_GAP  = 2_200; // hard floor between ANY two spoken cues
 const OUT_OF_FRAME_MS = 8_000;
@@ -73,7 +92,7 @@ const elPose = $('poseName'), elCue = $('cue'), elTimer = $('timer'),
       elReady = $('ready'), elProgress = $('progress'), elCount = $('poseCount'),
       elGateList = $('gateList'), elStart = $('startBtn'), elStop = $('stopBtn'),
       elExport = $('exportBtn'), elSummary = $('summary'), elCopy = $('copyBtn'),
-      elBundle = $('bundleBtn'),
+      elBundle = $('bundleBtn'), elMode = $('modeSel'),
       elFlip = $('flipBtn'), elVoice = $('voiceBtn'),
       elPrev = $('prevBtn'), elNext = $('nextBtn'), elCamInfo = $('camInfo');
 
@@ -153,6 +172,12 @@ const prefs = loadPrefs();
 let facing = (prefs.facing === 'user' || prefs.facing === 'environment') ? prefs.facing : 'environment';
 let liveFacing = facing;          // what the DEVICE actually gave us, for the label only
 let voiceOn = prefs.voiceOn !== false;
+// v1.8.6 — remember the session mode. Same reasoning as the camera choice: he
+// should not have to re-pick his session type every night.
+if (elMode && typeof MODES !== 'undefined') {
+  if (prefs.mode && MODES[prefs.mode]) elMode.value = prefs.mode;
+  elMode.addEventListener('change', () => savePrefs({ mode: elMode.value }));
+}
 let lastCueSpoken = '', lastCueAt = 0, lastSpeakAt = 0, readySpoken = false, outFrameAt = 0;
 
 // ── camera roll (phone not level) ────────────────────────────────────────
@@ -260,6 +285,17 @@ function measure(lm) {
   const lEl = angle(P(L.LSH), P(L.LEL), P(L.LWR));
   const rEl = angle(P(L.RSH), P(L.REL), P(L.RWR));
   const span = Math.abs(P(L.RSH).x - P(L.LSH).x);
+  // ── v1.8.6 LEG GEOMETRY ────────────────────────────────────────────────
+  // Honest scope: MediaPipe has NO muscle landmarks, so a quad CONTRACTION is
+  // invisible at any resolution — a locked leg and a slack leg can hold the
+  // same knee angle. What IS measurable is the geometry around the contraction:
+  //   kneeAngle : near-straight = locked posture; well bent = slack or staggered
+  //   kneeAsym  : one slack leg shows up as left/right asymmetry
+  //   legVis    : are the knee and ankle even in frame? On the 10-22 check-in,
+  //               4 of 11 failed this and a leg gate would have gone red on
+  //               FRAMING, not on his legs.
+  const kL = angle(P(L.LHIP), P(L.LKN), P(L.LAN));
+  const kR = angle(P(L.RHIP), P(L.RKN), P(L.RAN));
   return {
     torso,
     elbowAbove: torso > 1e-4 ? (shY - elY) / torso : NaN,
@@ -271,6 +307,14 @@ function measure(lm) {
     elbowAsym:  Math.abs(lEl - rEl),
     shoulderTilt: Math.atan2(P(L.RSH).y - P(L.LSH).y, Math.abs(P(L.RSH).x - P(L.LSH).x)) * 180 / Math.PI,
     lElbowY: P(L.LEL).y, rElbowY: P(L.REL).y,
+    kneeAngle: (kL + kR) / 2,
+    kneeAsym:  Math.abs(kL - kR),
+    legVis: Math.min(P(L.LKN).visibility, P(L.RKN).visibility,
+                     P(L.LAN).visibility, P(L.RAN).visibility),
+    // Side poses occlude the far knee in profile (measured: side bicep knee vis
+    // 0.41, side vacuum 0.35), so a side pose must be judged on the ANKLE —
+    // which is the only part that carries the calf/foot information anyway.
+    ankleVis: Math.min(P(L.LAN).visibility, P(L.RAN).visibility),
     vis: Math.min(P(L.LSH).visibility, P(L.RSH).visibility, P(L.LHIP).visibility, P(L.RHIP).visibility),
   };
 }
@@ -421,9 +465,15 @@ const shuffle = a => { const x = a.slice(); for (let i = x.length - 1; i > 0; i-
 // FIX 4 — a FRONT pose always opens the session so he can confirm framing
 // before he turns his back to the camera. The rest are still shuffled.
 function buildOrder() {
-  const front = GATES.POSES.filter(p => p.facing === 'FRONT').sort((a, b) => a.order - b.order);
-  const opener = front[0] || GATES.POSES[0];
-  return [opener, ...shuffle(GATES.POSES.filter(p => p !== opener))];
+  // v1.8.6 — the session mode decides WHICH poses run.
+  const key = (elMode && elMode.value) || 'full';
+  const mode = (typeof MODES !== 'undefined' && MODES[key]) ? MODES[key] : null;
+  const ids = mode ? mode.poses : GATES.POSES.map(p => p.id);
+  const set = GATES.POSES.filter(p => ids.indexOf(p.id) !== -1);
+  if (!set.length) return [GATES.POSES[0]];
+  const front = set.filter(p => p.facing === 'FRONT').sort((a, b) => a.order - b.order);
+  const opener = front[0] || set[0];
+  return [opener, ...shuffle(set.filter(p => p !== opener))];
 }
 
 function startSession() {
@@ -433,6 +483,9 @@ function startSession() {
   t0 = performance.now();
   session = { session: { date: new Date().toISOString(),
                          app: 'titan-pose v' + (window.APP_VERSION || 'unknown'),
+                         // v1.8.6 — which mode ran, so a Quarters session is never
+                         // compared against a Full check-in.
+                         mode: (elMode && elMode.value) || 'full',
                          started_at: new Date().toISOString(),
                          camera: facing,
                          resolution: `${video.videoWidth}x${video.videoHeight}`,
@@ -473,6 +526,9 @@ function loadPose() {
                     // red frame — i.e. the geometry may be LEFT OVER from the
                     // previous pose. Never treat such a pose as performed.
                     stale_geometry: null,
+                    // v1.8.6 framing + leg advisory (see loop())
+                    framing: null, legVis: null, kneeAngle: null, kneeAsym: null,
+                    kneeAdvisory: null,
                     still: null };
   announcePose(p);
 }
@@ -595,12 +651,35 @@ function loop() {
     if (li) li.className = g.pass ? 'ok' : (g.advisory ? 'adv' : 'bad');
   });
 
-  const allGreen = gates.every(g => g.pass || g.advisory) && m.vis > 0.5;
+  // ── v1.8.6 FRAMING PRE-GATE ────────────────────────────────────────────
+  const framingNeed = pose.facing === 'SIDE' ? SIDE_ANKLE_MIN : LEG_VIS_MIN;
+  const framingHave = pose.facing === 'SIDE' ? m.ankleVis : m.legVis;
+  const framingOk = framingHave >= framingNeed;
+
+  const allGreen = framingOk && gates.every(g => g.pass || g.advisory) && m.vis > 0.5;
 
   if (!allGreen) {
     greenRunStart = 0;
     readySpoken = false;
     sawRed = true;               // v1.8.5: a genuine red->green edge is now possible
+    // ⚠️ A framing failure OUTRANKS a physique cue. Telling him his elbow is low
+    // when the real problem is his feet are out of shot sends him the wrong way.
+    if (!framingOk) {
+      elReady.textContent = 'FEET OUT OF FRAME';
+      elReady.className = 'ready bad';
+      elCue.textContent = pose.facing === 'SIDE'
+        ? 'TILT THE PHONE DOWN — your FOOT is out of shot, and the foot is what shows the calf.'
+        : 'TILT THE PHONE DOWN or STEP BACK — knees and feet are out of shot.';
+      elCue.className = 'cue bad';
+      if (now - outFrameAt > OUT_OF_FRAME_MS) { outFrameAt = now; speak('Feet out of frame. Tilt the phone down.'); }
+      elTimer.textContent = (holdAccum / 1000).toFixed(1);
+      currentRecord.framing = false;
+      currentRecord.legVis = +framingHave.toFixed(2);
+      currentRecord.kneeAngle = Number.isFinite(m.kneeAngle) ? +m.kneeAngle.toFixed(1) : null;
+      currentRecord.kneeAsym = Number.isFinite(m.kneeAsym) ? +m.kneeAsym.toFixed(1) : null;
+      draw(lm, gates);
+      return;
+    }
     const cc = centreCue(m);
     const cue = cc ? cc.text : pickCue(gates, m);
     if (cue) { elCue.textContent = cc ? cc.short : cue; elCue.className = 'cue bad'; }
@@ -640,6 +719,20 @@ function loop() {
   }
 
   elTimer.textContent = (holdAccum / 1000).toFixed(1);
+  // v1.8.6 — leg geometry + framing, refreshed on every green frame.
+  // ⚠️ kneeAngle / kneeAsym are ADVISORY: MediaPipe has no muscle landmarks, so
+  // these describe leg POSTURE, not quad contraction. His 2026-10-22 baseline is
+  // fronts 174.7-179.6 deg and backs 177.4-177.9 deg, so drift is the signal.
+  currentRecord.framing = true;
+  currentRecord.legVis = +framingHave.toFixed(2);
+  currentRecord.kneeAngle = Number.isFinite(m.kneeAngle) ? +m.kneeAngle.toFixed(1) : null;
+  currentRecord.kneeAsym = Number.isFinite(m.kneeAsym) ? +m.kneeAsym.toFixed(1) : null;
+  currentRecord.kneeAdvisory =
+    (currentRecord.kneeAngle != null && (currentRecord.kneeAngle < KNEE_BAND.min || currentRecord.kneeAngle > KNEE_BAND.max))
+      ? 'knee OUT of the locked band'
+      : (currentRecord.kneeAsym != null && currentRecord.kneeAsym > KNEE_ASYM_MAX)
+        ? 'L/R knee asymmetric — is one leg slack?'
+        : null;
   currentRecord.gates = gates.map(g => ({
     name: g.id, pass: !!g.pass,
     value: Number.isFinite(g.value) ? +g.value.toFixed(3) : null,
@@ -812,6 +905,9 @@ function summaryText() {
       (p.transition_seconds != null
         ? ` · reset ${p.transition_seconds}s${p.advance && p.advance !== 'auto' ? ' (' + p.advance + ')' : ' (auto)'}`
         : '') +
+      // v1.8.6: leg POSTURE is advisory, never a gate — landmarks cannot see a
+      // quad contraction. It is reported so drift across sessions is visible.
+      (p.kneeAdvisory ? ` ⚠ ${p.kneeAdvisory}` : '') +
       // v1.8.5: never let a stale-geometry pose read as a performed one.
       (p.stale_geometry ? ' ⚠ STALE-GEOMETRY (no red frame — may be the previous pose)' : ''));
     g.filter(x => !x.pass).forEach(x => lines.push(`   ✗ ${x.name} = ${x.value} (target ${x.target})`));

@@ -1,5 +1,5 @@
 {
-  "version": "1.8.5",
+  "version": "1.8.6",
   "released": "2026-10-23",
-  "notes": "Auto-capture a still frame at POSE LOCKED, shipped with the session as one ZIP (photos/NN_<pose>.jpg + session.json). Anti-false-green: t_green now needs a settled pose AND a red-to-green edge, so a pose can no longer inherit the previous pose's geometry."
+  "notes": "Session modes (Mandies / Quarters / Full), the two missing quarter turns (front relaxed, back relaxed), per-pose spanTorso bands measured on the 10-22 check-in, a framing gate that refuses to score with feet out of frame, and leg geometry recorded as an advisory readout."
 }

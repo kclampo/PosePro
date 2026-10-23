@@ -139,3 +139,27 @@ input[type=number].bad{border-color:var(--bad); background:#1e1010; color:#ff9b9
 .sitemed b{color:var(--ink); font:800 14px/1 ui-monospace,monospace}
 .sitewarn{font-style:normal; color:var(--bad); font-size:11px}
 
+
+/* ── v1.8.6 session mode selector ──────────────────────────────────────── */
+.modeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 1 / -1;          /* span both button columns */
+  font-size: 12px;
+  letter-spacing: .08em;
+  color: var(--dim, #8a8a8a);
+  margin-right: 4px;
+}
+.modeSel {
+  background: #1c1c1c;
+  color: #f2f2f2;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  min-width: 168px;
+}
+.modeSel:focus { outline: 2px solid #d4af37; outline-offset: 1px; }

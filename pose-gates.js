@@ -6,7 +6,21 @@
  *   elbowAngle   = mean of left/right elbow angles (deg)
  *   elbowAsym    = |leftElbowAngle - rightElbowAngle| (deg)
  *   shoulderTilt = degrees of shoulder-line tilt from horizontal
- *   spanTorso    = shoulderSpan / torso
+ *   spanTorso    = shoulderSpan / torso   (span aspect-corrected: x * W/H)
+ *   kneeAngle    = mean hip-knee-ankle (deg)      | v1.8.6 leg block
+ *   kneeAsym     = |leftKnee - rightKnee| (deg)   | v1.8.6 leg block
+ *   legVis       = min(knee,ankle visibility)     | FRAMING check — see below
+ *   ankleVis     = min ankle visibility           | side poses are judged on this
+ *
+ * ⚠️ LEG LOCK AND CALVES — AN HONEST LIMIT.
+ * MediaPipe Pose returns 33 JOINT positions and has no muscle landmarks, so a
+ * quad CONTRACTION cannot be seen at any resolution: a locked leg and a slack
+ * leg can hold the same knee angle. Measured on the 2026-10-22 check-in his
+ * front poses span 174.7-179.6 deg and his back poses 177.4-177.9 deg — i.e.
+ * his leg lock is already CONSISTENT, and kneeAngle/kneeAsym are ADVISORY
+ * readouts, not gates. What IS enforced is FRAMING: on that same set 4 of 11
+ * photos had the knees or ankles out of frame, and one of them was Abs & Thigh.
+ * A leg gate would have gone red on framing, not on his legs.
  *
  * CALIBRATION STATUS — shown in the UI, do not hide it.
  *   confirmed  = derived from real stage frames of Abarca / Zarif / Bembry (2026-10-21)
@@ -77,7 +91,7 @@ const GATES = {
       order: 3,
       cues: ['Turn side-on', 'Near arm bent at 90°, far hand grabs the wrist', 'Chest up, arch the rib cage'],
       gates: [
-        { id: 'side_on', measure: 'spanTorso', min: 0, max: 0.70, status: 'confirmed',
+        { id: 'side_on', measure: 'spanTorso', min: 0.35, max: 0.52, status: 'estimated',
           label: 'Turned side-on',
           cueHigh: 'Turn further side-on to the camera' },
         { id: 'manual_chest', measure: 'manual', status: 'manual',
@@ -92,7 +106,7 @@ const GATES = {
       order: 4,
       cues: ['Turn side-on', 'Near arm driven BACK behind you', 'Abs drawn in and flexed'],
       gates: [
-        { id: 'side_on', measure: 'spanTorso', min: 0, max: 0.70, status: 'confirmed',
+        { id: 'side_on', measure: 'spanTorso', min: 0.35, max: 0.52, status: 'estimated',
           label: 'Turned side-on',
           cueHigh: 'Turn further side-on to the camera' },
         { id: 'manual_abs', measure: 'manual', status: 'manual',
@@ -222,7 +236,7 @@ const GATES = {
       order: 9,
       cues: ['Stand TALL and relaxed', 'Turn so your RIGHT side faces the camera', 'Arms hang, no flexing'],
       gates: [
-        { id: 'side_on', measure: 'spanTorso', min: 0, max: 0.70, status: 'confirmed',
+        { id: 'side_on', measure: 'spanTorso', min: 0.0, max: 0.3, status: 'confirmed',
           label: 'Turned side-on',
           cueHigh: 'Turn further — you are still too square to the camera' },
         { id: 'shoulder_level', measure: 'shoulderTilt', min: -3, max: 3, status: 'estimated',
@@ -240,7 +254,7 @@ const GATES = {
       order: 10,
       cues: ['Stand TALL and relaxed', 'Turn so your LEFT side faces the camera', 'Arms hang, no flexing'],
       gates: [
-        { id: 'side_on', measure: 'spanTorso', min: 0, max: 0.70, status: 'confirmed',
+        { id: 'side_on', measure: 'spanTorso', min: 0.0, max: 0.3, status: 'confirmed',
           label: 'Turned side-on',
           cueHigh: 'Turn further — you are still too square to the camera' },
         { id: 'shoulder_level', measure: 'shoulderTilt', min: -3, max: 3, status: 'estimated',
@@ -251,7 +265,91 @@ const GATES = {
           label: 'Tall, relaxed, standing leg set (your eyes)' },
       ],
     },
+    {
+      id: 'front_relaxed',
+      label: 'Front Relaxed',
+      facing: 'FRONT',
+      order: 10,
+      cues: [
+        'Feet slightly apart, weight even',
+        'Arms HANG — slightly away from the body, not flexed',
+        'Lats spread wide · quads locked · abs in',
+        'This is scored. It is NOT a rest position.',
+      ],
+      gates: [
+        { id: 'relaxed_arms_front', measure: 'elbowAngle', min: 150, max: 180, status: 'estimated',
+          advisory: true,
+          label: 'Arms hanging, not flexed (advisory)',
+          cueLow: 'Straighten your arms — this is the RELAXED pose',
+          cueHigh: 'Straighten your arms — this is the RELAXED pose' },
+        { id: 'front_facing', measure: 'spanTorso', min: 0.50, max: 0.66, status: 'estimated',
+          label: 'Square to the judges',
+          cueLow: 'Turn to face the camera square-on',
+          cueHigh: 'Turn to face the camera square-on' },
+        { id: 'shoulder_level_fr', measure: 'shoulderTilt', min: -3, max: 3, status: 'estimated',
+          label: 'Shoulders level',
+          cueLow: 'Drop your high shoulder',
+          cueHigh: 'Drop your high shoulder' },
+        { id: 'manual_front_relaxed', measure: 'manual', status: 'manual',
+          label: 'Lats spread, quads LOCKED, abs in — arms hanging (your eyes)' },
+      ],
+    },
+    {
+      id: 'back_relaxed',
+      label: 'Back Relaxed',
+      facing: 'BACK',
+      order: 11,
+      cues: [
+        'Back to the judges, arms hanging slightly away',
+        'Lats spread as wide as you can',
+        'Calves flexed · glutes and hams tight',
+      ],
+      gates: [
+        { id: 'relaxed_arms_back', measure: 'elbowAngle', min: 150, max: 180, status: 'estimated',
+          advisory: true,
+          label: 'Arms hanging, not flexed (advisory)',
+          cueLow: 'Straighten your arms — this is the RELAXED pose',
+          cueHigh: 'Straighten your arms — this is the RELAXED pose' },
+        { id: 'back_facing', measure: 'spanTorso', min: 0.80, max: 0.95, status: 'estimated',
+          label: 'Back square to the judges',
+          cueLow: 'Turn your back fully to the camera',
+          cueHigh: 'Turn your back fully to the camera' },
+        { id: 'shoulder_level_br', measure: 'shoulderTilt', min: -3, max: 3, status: 'estimated',
+          label: 'Shoulders level',
+          cueLow: 'Drop your high shoulder',
+          cueHigh: 'Drop your high shoulder' },
+        { id: 'manual_back_relaxed', measure: 'manual', status: 'manual',
+          label: 'Lats wide, calves FLEXED, glutes tight (your eyes)' },
+      ],
+    },
   ],
+};
+
+/* ══ SESSION MODES ══════════════════════════════════════════════════════════
+ * Kevin, 2026-10-23: "I like the drop down with the 3 options mandies, Quarters
+ * only, Full Check ins."
+ *
+ * QUARTERS exists separately because it is his weakest area and he should be
+ * able to drill it without sitting through eight mandatories first.
+ * Vacuums are deliberately NOT here yet — he is deferring which check-in poses
+ * belong in the suite until real posers have tested the app.
+ */
+const MODES = {
+  mandies: {
+    label: 'MANDIES',
+    poses: ['front_double_biceps', 'front_lat_spread', 'side_chest', 'side_triceps',
+            'back_double_biceps', 'back_lat_spread', 'abs_thigh', 'most_muscular'],
+  },
+  quarters: {
+    label: 'QUARTERS ONLY',
+    poses: ['front_relaxed', 'quarter_turn_right', 'back_relaxed', 'quarter_turn_left'],
+  },
+  full: {
+    label: 'FULL CHECK-IN',
+    poses: ['front_double_biceps', 'front_lat_spread', 'side_chest', 'side_triceps',
+            'back_double_biceps', 'back_lat_spread', 'abs_thigh', 'most_muscular',
+            'front_relaxed', 'quarter_turn_right', 'back_relaxed', 'quarter_turn_left'],
+  },
 };
 
 /* Which landmark angular convention the score compares against.
@@ -261,3 +359,10 @@ const STATUS_LABEL = {
   estimated: 'ESTIMATED — session 1 recalibrates this',
   manual: 'your eyes — landmarks cannot measure it',
 };
+
+/* Expose MODES on window so app.js (a module) and any harness can read it
+ * unambiguously. A top-level `const` in a classic script is a global lexical
+ * binding, which modules CAN see — but only via the bare name, which is exactly
+ * the kind of thing that silently breaks. Be explicit. */
+window.MODES = MODES;
+window.GATES = GATES;
