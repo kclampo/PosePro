@@ -30,6 +30,34 @@ const MP_MODEL =
 
 const HOLD_MS = 10_000;      // required green hold
 const READY_MS = 800;        // must be green this long before the hold clock starts
+
+// ── v1.8.5 ANTI-FALSE-GREEN ──────────────────────────────────────────────
+// Kevin, 2026-10-23: "the front poses triggered immediatly without any
+// transition" and "the quarter turns are not working at all I could be almost
+// any arrangment of butt out, soulders turned and it gives me a pass."
+//
+// MEASURED CAUSE. loadPose() evaluates the CURRENT camera frame, and in the
+// frame the pose loads the athlete is still in the PREVIOUS pose. On the
+// 2026-10-23 session four of ten poses stamped t_green in under 400 ms:
+//   side_chest 0.05s · side_triceps 0.03s · most_muscular 0.03s ·
+//   back_lat_spread 0.37s
+// and most_muscular recorded t_green at 27 ms WHILE ITS OWN elbow_angle read
+// 110.686 against a target of [69, 101] — green and failing in one record.
+// Coming out of side triceps his elbow was already flexed, which satisfied the
+// new pose's gates on frame one. He then logged a 10-second hold on a pose he
+// was not performing.
+//
+// FIX — two conditions before t_green may stamp:
+//   1. the pose has been on screen for MIN_SETTLE_MS (nobody enters a pose in
+//      370 ms, let alone 27 ms), AND
+//   2. a non-green frame has been seen since the pose loaded (a genuine
+//      red -> green EDGE means he actually moved into it).
+// If he legitimately holds straight through from the previous pose he may never
+// see red, so after STALE_FALLBACK_MS the stamp is allowed BUT the record is
+// marked `stale_geometry: true`. The app must never silently call a stale frame
+// a performed pose — it records the doubt instead of hiding it.
+const MIN_SETTLE_MS      = 1200;
+const STALE_FALLBACK_MS  = 3500;
 const CUE_REPEAT_MS = 6_000; // never repeat the same spoken cue faster than this
 const SPEAK_MIN_GAP  = 2_200; // hard floor between ANY two spoken cues
 const OUT_OF_FRAME_MS = 8_000;
@@ -45,6 +73,7 @@ const elPose = $('poseName'), elCue = $('cue'), elTimer = $('timer'),
       elReady = $('ready'), elProgress = $('progress'), elCount = $('poseCount'),
       elGateList = $('gateList'), elStart = $('startBtn'), elStop = $('stopBtn'),
       elExport = $('exportBtn'), elSummary = $('summary'), elCopy = $('copyBtn'),
+      elBundle = $('bundleBtn'),
       elFlip = $('flipBtn'), elVoice = $('voiceBtn'),
       elPrev = $('prevBtn'), elNext = $('nextBtn'), elCamInfo = $('camInfo');
 
@@ -52,6 +81,8 @@ let landmarker = null, stream = null, running = false, lastVideoTime = -1;
 let order = [], idx = 0, state = 'idle';
 let greenRunStart = 0, holdAccum = 0, lastTick = 0;
 let session = null, currentRecord = null;
+// v1.8.5 — anti-false-green + still capture
+let poseLoadAt = 0, sawRed = false, shots = [];
 // Session t0. Everything timing-related is milliseconds since this moment, so
 // set-time and transition-time stay comparable even if the athlete pauses.
 let t0 = 0;
@@ -398,6 +429,7 @@ function buildOrder() {
 function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
+  shots = [];                                  // v1.8.5
   t0 = performance.now();
   session = { session: { date: new Date().toISOString(),
                          app: 'titan-pose v' + (window.APP_VERSION || 'unknown'),
@@ -414,6 +446,7 @@ function loadPose() {
   if (idx >= order.length) return finishSession();
   const p = order[idx];
   greenRunStart = 0; holdAccum = 0; lastTick = performance.now();
+  poseLoadAt = performance.now(); sawRed = false;   // v1.8.5 anti-false-green
   lastCueSpoken = ''; readySpoken = false; outFrameAt = 0; lastSpeakAt = 0;
   resetSmooth(); resetGates();
   elPose.textContent = p.label;
@@ -435,7 +468,12 @@ function loadPose() {
                     // transition_seconds = t_start - previous t_end   "how fast I reset"
                     t_start: Math.round(performance.now() - t0),
                     t_green: null, t_end: null,
-                    set_seconds: null, transition_seconds: null };
+                    set_seconds: null, transition_seconds: null,
+                    // v1.8.5: true when t_green was allowed without ever seeing a
+                    // red frame — i.e. the geometry may be LEFT OVER from the
+                    // previous pose. Never treat such a pose as performed.
+                    stale_geometry: null,
+                    still: null };
   announcePose(p);
 }
 
@@ -515,8 +553,9 @@ function finishSession() {
   elPose.textContent = 'Done'; elCue.textContent = '';
   elProgress.style.width = '100%';
   elExport.disabled = false;
+  elBundle.disabled = false;
   elPrev.disabled = true; elNext.disabled = true;
-  elSummary.textContent = summaryText();
+  elSummary.textContent = summaryText() + `\nPHOTOS: ${shots.length} captured`;
   speak('Session complete.');
 }
 
@@ -561,6 +600,7 @@ function loop() {
   if (!allGreen) {
     greenRunStart = 0;
     readySpoken = false;
+    sawRed = true;               // v1.8.5: a genuine red->green edge is now possible
     const cc = centreCue(m);
     const cue = cc ? cc.text : pickCue(gates, m);
     if (cue) { elCue.textContent = cc ? cc.short : cue; elCue.className = 'cue bad'; }
@@ -577,12 +617,15 @@ function loop() {
     maybeSpeakCue(cue, now);
     // hold clock PAUSES, does not reset
   } else {
-    if (!greenRunStart) {
-      greenRunStart = now;
-      // v1.8 — stamp the FIRST all-green frame of this pose. This is the
-      // "how quickly did I find the window" metric; it is per-session-t0.
-      if (currentRecord && currentRecord.t_green == null) {
+    if (!greenRunStart) greenRunStart = now;
+    // v1.8.5 — stamp t_green only when the pose has SETTLED *and* he has moved
+    // into it. Without this a pose inherits the previous pose's geometry and
+    // stamps green on frame one (measured: 27 ms on most_muscular).
+    if (currentRecord && currentRecord.t_green == null) {
+      const settledFor = performance.now() - poseLoadAt;
+      if (settledFor >= MIN_SETTLE_MS && (sawRed || settledFor >= STALE_FALLBACK_MS)) {
         currentRecord.t_green = Math.round(performance.now() - t0);
+        if (!sawRed) currentRecord.stale_geometry = true;
       }
     }
     const greenFor = now - greenRunStart;
@@ -611,6 +654,7 @@ function loop() {
     elCue.textContent = '';
     speak('Locked.');
     holdAccum = HOLD_MS;      // stop the clock ticking past the target
+    captureStill(pose.id, pose.label);   // v1.8.5 — full-res frame, motionless
     finishPose();
   }
 }
@@ -767,11 +811,82 @@ function summaryText() {
       (p.set_seconds != null ? ` · set ${p.set_seconds}s` : '') +
       (p.transition_seconds != null
         ? ` · reset ${p.transition_seconds}s${p.advance && p.advance !== 'auto' ? ' (' + p.advance + ')' : ' (auto)'}`
-        : ''));
+        : '') +
+      // v1.8.5: never let a stale-geometry pose read as a performed one.
+      (p.stale_geometry ? ' ⚠ STALE-GEOMETRY (no red frame — may be the previous pose)' : ''));
     g.filter(x => !x.pass).forEach(x => lines.push(`   ✗ ${x.name} = ${x.value} (target ${x.target})`));
   });
   lines.push(`TOTAL: ${pass}/${total} gates passed`);
   return lines.join('\n');
+}
+
+// ── v1.8.5 STILL CAPTURE ─────────────────────────────────────────────────
+// Kevin, 2026-10-23: "I want you to push the update that lets you capture the
+// photos automatically from the frames so I can send them to you. The
+// corrolation with the JSON is also good so you cna analyze better."
+//
+// Taken at POSE LOCKED, not at t_green: the completed 10-second hold guarantees
+// he is motionless, so there is no motion blur. Drawn from the LIVE <video> at
+// full sensor resolution — deliberately NOT decoded from the recorded stream,
+// which would stack H.264 softening on top of the pose.
+function captureStill(poseId, label) {
+  try {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    // The preview is mirrored on the front camera; mirror the still to match
+    // what he actually saw on screen.
+    if (liveFacing === 'user') { ctx.translate(w, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(video, 0, 0, w, h);
+    const seq = String(shots.length + 1).padStart(2, '0');
+    const name = `${seq}_${poseId}.jpg`;
+    const rec = currentRecord;
+    cv.toBlob(function (blob) {
+      if (!blob) return;
+      shots.push({ name, pose: poseId, label, blob, taken_at: new Date().toISOString() });
+      if (rec) rec.still = name;
+      if (elSummary && session) elSummary.textContent =
+        summaryText() + `\nPHOTOS: ${shots.length} captured`;
+    }, 'image/jpeg', 0.92);
+  } catch (e) { console.warn('still capture failed', e); }
+}
+
+// ── ZIP writer lives in zip.js ───────────────────────────────────────────
+// Moved out of this module on 2026-10-23: a module-scoped makeZip cannot be
+// exercised from a test harness, and a ZIP writer that cannot be tested is
+// one that fails silently on the phone where it costs the session's photos.
+// window.makeZip(files) -> Blob   /   window.crc32(bytes) -> uint32
+
+// One file: photos/01_<pose>.jpg … plus session.json. The photo name carries the
+// pose id and its ordinal, so the JSON and the images are correlated by design
+// rather than by memory.
+async function exportBundle() {
+  if (!session) return;
+  const files = [];
+  for (const s of shots) {
+    const buf = new Uint8Array(await s.blob.arrayBuffer());
+    files.push({ name: 'photos/' + s.name, data: buf });
+  }
+  const manifest = {
+    app: 'titan-pose v' + (window.APP_VERSION || 'unknown'),
+    exported_at: new Date().toISOString(),
+    photo_count: shots.length,
+    session: session,
+    shots: shots.map(s => ({ file: 'photos/' + s.name, pose: s.pose, label: s.label, taken_at: s.taken_at })),
+    note: 'photos/NN_<pose_id>.jpg corresponds to session.poses[NN-1]. ' +
+          'stale_geometry:true means the pose was marked complete without ever showing a ' +
+          'red frame — the geometry may belong to the PREVIOUS pose. Do not treat as performed.',
+  };
+  files.push({ name: 'session.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
+  const nm = `titan-pose_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.zip`;
+  const file = new File([window.makeZip(files)], nm, { type: 'application/zip' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Titan Pose session + photos' }); return; } catch (e) {}
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file); a.download = nm; a.click();
 }
 
 async function exportSession() {
@@ -809,6 +924,7 @@ elVoice.addEventListener('click', () => {
   if (voiceOn) speak('Voice on.');
 });
 elExport.addEventListener('click', exportSession);
+elBundle.addEventListener('click', exportBundle);
 elCopy.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(elSummary.textContent); elCopy.textContent = 'COPIED'; }
   catch { elCopy.textContent = 'select + copy manually'; }

@@ -1,5 +1,5 @@
 {
-  "version": "1.8.4",
+  "version": "1.8.5",
   "released": "2026-10-23",
-  "notes": "Release number on the page, with a live up-to-date check."
+  "notes": "Auto-capture a still frame at POSE LOCKED, shipped with the session as one ZIP (photos/NN_<pose>.jpg + session.json). Anti-false-green: t_green now needs a settled pose AND a red-to-green edge, so a pose can no longer inherit the previous pose's geometry."
 }

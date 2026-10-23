@@ -6,9 +6,12 @@
  * v10 = v1.8.2 (light meter: reports mean luma + a noise proxy in the camera
  *             line, disambiguates "TOO DARK" from "STEP INTO FRAME", and
  *             records the reading per pose so dim sessions can be flagged).
+ * v14 = v1.8.5 (still capture at POSE LOCKED + one-ZIP export with the session
+ *             JSON; anti-false-green red->green edge so a pose cannot inherit
+ *             the previous pose's geometry).
  */
-const CACHE = 'titan-pose-v13';
-const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './version.js', './manifest.json', './icon.svg'];
+const CACHE = 'titan-pose-v14';
+const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './zip.js', './version.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
