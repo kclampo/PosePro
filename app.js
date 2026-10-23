@@ -1,4 +1,9 @@
-/* app.js — TITAN POSE v1.8.3 — real-time posing gate trainer
+/* app.js — TITAN POSE v1.8.4 — real-time posing gate trainer
+ *
+ * ⚠️ The number on the page comes from version.js (window.APP_VERSION), NOT from
+ * this comment. They drifted apart once already: this header said v1.8.3 while
+ * version.js and the export both said v1.8.4. Bump version.js on release; treat
+ * this line as documentation that must match it.
  *
  * Runs 100% on-device. No network calls after load. No credentials.
  * MediaPipe Pose Landmarker (WASM/GPU) -> body-relative measurements -> gates -> green/red.
