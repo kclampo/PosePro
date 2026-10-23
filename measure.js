@@ -31,7 +31,12 @@ const SITES = [
   { id:'bic',   name:'BICEPS',        feed:'ARM',  min:0.08, max:0.60,
     cue:'Vertical fold. Midpoint acromiale → radiale, FRONT of the arm. Arm hangs limp.' },
   { id:'tri',   name:'TRICEPS',       feed:'ARM',  min:0.05, max:0.50,
-    cue:'Vertical fold, SAME HEIGHT, BACK of the arm. Arm hangs limp.' },
+    // Kevin, 2026-10-23: "could not get the skin to pull away enough to measure
+    // the triceps with my arm straight. Only when I bent the elbow."
+    // ⇒ A BENT ELBOW IS NOT A WORKAROUND, IT IS THE BUG. Flexing bunches the
+    // triceps, the skin goes taut and there is no fold to lift, so the caliper
+    // reads ~0. Three reads came back 0/0/0.25 on a 227 lb man — impossible.
+    cue:'Vertical fold, SAME HEIGHT, BACK of the arm. Arm hangs limp, ELBOW STRAIGHT. If the fold will not lift, the triceps is CONTRACTED, not lean — never bend the elbow to get a number.' },
   { id:'chest', name:'CHEST',         feed:'JP-3', min:0.25, max:1.30,
     cue:'Diagonal fold, midway nipple → front armpit crease. Arm relaxed at side.' },
   { id:'abdo',  name:'ABDOMEN',       feed:'JP-3', min:0.40, max:2.00,
@@ -207,6 +212,12 @@ function render(){
   if (Number.isFinite(ratio)) lines.push(`ratio ${ratio.toFixed(4)} | waist gate ${gate.toFixed(2)} (cap 37.50)`);
   if (med.lowab) lines.push(`spare tire (lowab) ${fmt(med.lowab,3)} in = ${(med.lowab*25.4).toFixed(1)} mm`);
   if (tapeBad.length) lines.push(`⚠️ OUT OF RANGE: ${tapeBad.join(', ')}`);
+  // ⚠️ Skinfold out-of-range was NEVER reported in the export — only tape was.
+  // That is how three triceps reads of 0/0/0.25 got forwarded as if they were
+  // data. A 0.00 fold is not a lean site, it is a failed pinch.
+  const skfBad = SITES.filter(s => Number.isFinite(med[s.id]) && (med[s.id] < s.min || med[s.id] > s.max))
+                      .map(s => `${s.id} ${fmt(med[s.id],3)} (expect ${s.min}–${s.max})`);
+  if (skfBad.length) lines.push(`⛔ SKF OUT OF RANGE — a 0.00 fold is impossible: ${skfBad.join(', ')}`);
 
   document.getElementById('out').textContent = lines.join('\n');
 }
