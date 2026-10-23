@@ -7,8 +7,8 @@
  *             line, disambiguates "TOO DARK" from "STEP INTO FRAME", and
  *             records the reading per pose so dim sessions can be flagged).
  */
-const CACHE = 'titan-pose-v11';
-const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './manifest.json', './icon.svg'];
+const CACHE = 'titan-pose-v12';
+const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './version.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -23,6 +23,10 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  // ⛔ version.json must ALWAYS hit the network. A cached copy would report
+  // "up to date" forever — which is the exact failure the version badge exists
+  // to catch. Never add it to SHELL.
+  if (e.request.url.indexOf('version.json') !== -1) return;
   e.respondWith(
     caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
       const copy = res.clone();

@@ -362,7 +362,8 @@ function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
   t0 = performance.now();
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8.3',
+  session = { session: { date: new Date().toISOString(),
+                         app: 'titan-pose v' + (window.APP_VERSION || 'unknown'),
                          started_at: new Date().toISOString(),
                          camera: facing,
                          resolution: `${video.videoWidth}x${video.videoHeight}`,
