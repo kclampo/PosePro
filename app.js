@@ -126,6 +126,8 @@ let lastCueSpoken = '', lastCueAt = 0, lastSpeakAt = 0, readySpoken = false, out
 // i.e. permanently red and un-passable. Kevin called this on 2026-10-22.
 const DEROL_MAX  = 6;   // auto-correct roll up to this many degrees
 const LEVEL_WARN = 3;   // above this, tell him to physically fix the phone
+const CENTRE_SOFT = 0.10;  // start telling him he has drifted off centre
+const CENTRE_HARD = 0.18;  // badly off — say it over anything else
 
 let rollDeg = 0, levelReady = false;
 
@@ -174,6 +176,26 @@ function updateLevelUI() {
   el.className = 'levelInfo ' + cls;
 }
 
+// Kevin, 2026-10-23: *"staying centered on the frame helped. Maybe add that to
+// the audio instructions if I drift left or right of frame."*
+// ⚠️ DIRECTION IS ANATOMICAL, NOT SCREEN-SIDE. A rear camera pointed at his back
+// has his left on the image's left; a FRONT camera facing him puts his left on
+// the image's RIGHT. And in a back pose he cannot see the screen at all — so the
+// cue must name HIS left or right, never "screen left".
+function centreCue(m) {
+  if (!Number.isFinite(m.centreX)) return null;
+  const off = m.centreX - 0.5;
+  if (Math.abs(off) < CENTRE_SOFT) return null;
+  const towardImageRight = off < 0;
+  const hisRight = (facing === 'user') ? !towardImageRight : towardImageRight;
+  const dir = hisRight ? 'right' : 'left';
+  return {
+    text:  `You are off centre — step to your ${dir}`,
+    short: `OFF CENTRE — STEP ${dir.toUpperCase()}`,
+    hard:  Math.abs(off) >= CENTRE_HARD,
+  };
+}
+
 // ── geometry ─────────────────────────────────────────────────────────────
 const angle = (a, b, c) => {
   const v1 = [a.x - b.x, a.y - b.y], v2 = [c.x - b.x, c.y - b.y];
@@ -206,6 +228,9 @@ function measure(lm) {
     torso,
     elbowAbove: torso > 1e-4 ? (shY - elY) / torso : NaN,
     spanTorso:  torso > 1e-4 ? span / torso : NaN,
+    // Horizontal framing. RAW image x (not aspect-scaled) because this is about
+    // where he sits in the frame, not about geometry.
+    centreX: (lm[L.LSH].x + lm[L.RSH].x + lm[L.LHIP].x + lm[L.RHIP].x) / 4,
     elbowAngle: (lEl + rEl) / 2,
     elbowAsym:  Math.abs(lEl - rEl),
     shoulderTilt: Math.atan2(P(L.RSH).y - P(L.LSH).y, Math.abs(P(L.RSH).x - P(L.LSH).x)) * 180 / Math.PI,
@@ -275,7 +300,14 @@ function evaluate(pose, m) {
 function pickCue(gates, m) {
   const fails = gates.filter(g => !g.pass && !g.manual);
   if (!fails.length) return null;
-  const g = fails[0];
+  // ⚠️ CUE-CONFLICT FIX (Kevin, 2026-10-23): *"kept telling me to raise my left
+  // elbow until they were not parallel, then it would complain my shoulder was
+  // not level."* Raising an elbow ELEVATES that shoulder, so fixing symmetry
+  // breaks shoulder_level — and dropping the shoulder drops the elbow, breaking
+  // symmetry again. The two chase each other and the pose never locks.
+  // ⇒ The SHOULDER LINE IS THE BASE. Fix it first; elbow height follows from
+  //   scapular position anyway. One instruction instead of two fighting ones.
+  const g = fails.find(x => x.id === 'shoulder_level') || fails[0];
   if (g.sideAware) {
     // name the side that is physically LOWER (bigger y)
     const side = m.lElbowY > m.rElbowY ? 'left' : 'right';
@@ -406,9 +438,21 @@ function loadPose() {
 // carries information for calibration.
 function commitCurrent(skipped, advance) {
   if (!session || !currentRecord) { currentRecord = null; return; }
-  if (holdAccum > 300) {
+  // ⚠️ ALWAYS COMMIT (2026-10-23). A pose he fought with and lost is the most
+  // valuable calibration data in the session. Discarding anything under 0.3 s of
+  // hold is why back_double_biceps left no trace at all on 2026-10-23 — the one
+  // pose that was actually broken. Incomplete poses now carry incomplete:true
+  // with hold_seconds 0 instead of vanishing.
+  {
     currentRecord.hold_seconds = +(holdAccum / 1000).toFixed(2);
     currentRecord.skipped = !!skipped;
+    currentRecord.incomplete = holdAccum <= 300;
+    // Camera roll at commit time. Four front poses on 2026-10-23 read
+    // shoulder_level between -2.06 and -2.71 — a consistent one-direction bias
+    // that smells like phone tilt rather than anatomy. Without the roll in the
+    // export those two causes are indistinguishable.
+    currentRecord.roll_deg = levelReady ? +rollDeg.toFixed(1) : null;
+    currentRecord.level_active = !!levelReady;
     // WHY THIS FIELD EXISTS (v1.8.1):
     // transition_seconds is only meaningful when the ATHLETE drives the change.
     //  - 'auto'   : finishPose() advances via setTimeout(loadPose, 700), so the
@@ -512,8 +556,9 @@ function loop() {
   if (!allGreen) {
     greenRunStart = 0;
     readySpoken = false;
-    const cue = pickCue(gates, m);
-    if (cue) { elCue.textContent = cue; elCue.className = 'cue bad'; }
+    const cc = centreCue(m);
+    const cue = cc ? cc.text : pickCue(gates, m);
+    if (cue) { elCue.textContent = cc ? cc.short : cue; elCue.className = 'cue bad'; }
     // Disambiguate WHY he isn't being seen. The landmarker failing is the real
     // signal; luma only breaks the tie between "wrong place" and "wrong room".
     if (m.vis > 0.5) {
@@ -686,11 +731,21 @@ function stopCamera() {
 }
 
 function stopSession() {
+  // ⚠️ COMMIT BEFORE TEARING DOWN. The pose he stops on is almost always the one
+  // he was losing to — on 2026-10-23 that was back_double_biceps, and it left
+  // the export with no data at all.
+  if (session) commitCurrent(true);
   stopCamera(); state = 'idle';
   elReady.textContent = 'STOPPED'; elReady.className = 'ready wait';
   elPrev.disabled = true; elNext.disabled = true;
   elProgress.style.width = '0%';
-  if (session && session.poses.length) elExport.disabled = false;
+  if (session && session.poses.length) {
+    elExport.disabled = false;
+    // ⚠️ Show the summary on STOP too. It used to only be built by
+    // finishSession(), so stopping early left SAVE enabled with a blank panel —
+    // he could export a session he could not read.
+    elSummary.textContent = summaryText();
+  }
 }
 
 // ── export ───────────────────────────────────────────────────────────────

@@ -148,16 +148,23 @@ const GATES = {
       label: 'Abdominals & Thighs',
       facing: 'FRONT',
       order: 7,
-      cues: ['Hands behind your head', 'Drive BOTH elbows UP toward your ears, slightly forward', 'Blow ALL your air out'],
+      cues: ['Hands behind your head', 'Drive BOTH elbows UP toward your EARS, slightly forward', 'Blow ALL your air out'],
+      // ⛔ 2026-10-23 — THIS POSE'S LANDMARKS ARE UNRELIABLE, NOT THE ATHLETE'S BODY.
+      // Kevin's run returned elbowAbove = -0.524 (elbows half a torso BELOW the
+      // shoulders, on a pose where they must be above) AND elbowAsym = 48.3 deg.
+      // A human cannot hold 48 deg of elbow asymmetry. Hands clasped behind the
+      // head occlude the wrist/elbow landmarks and the model guesses.
+      // ⇒ elbow_high and symmetry are ADVISORY: still reported, never blocking,
+      //   until this pose gets a measurement that survives occlusion.
       gates: [
-        { id: 'elbow_high', measure: 'elbowAbove', min: 0.45, max: 1.2, status: 'confirmed',
+        { id: 'elbow_high', measure: 'elbowAbove', min: 0.45, max: 1.2, status: 'estimated', advisory: true,
           label: 'Elbows driven high',
           cueLow: 'ELBOWS UP — drive them toward your EARS, not out to the sides' },
-        { id: 'elbow_angle', measure: 'elbowAngle', min: 40, max: 62, status: 'confirmed',
+        { id: 'elbow_angle', measure: 'elbowAngle', min: 40, max: 62, status: 'estimated', advisory: true,
           label: 'Hands behind the head',
           cueLow: 'Bring your hands closer behind your head',
           cueHigh: 'Open your hands out from behind your head' },
-        { id: 'symmetry', measure: 'elbowAsym', min: 0, max: 4, status: 'confirmed', sideAware: true,
+        { id: 'symmetry', measure: 'elbowAsym', min: 0, max: 4, status: 'estimated', sideAware: true, advisory: true,
           label: 'Left and right even',
           cueHigh: 'Raise your {side} elbow to match' },
       ],
