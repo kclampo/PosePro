@@ -7,7 +7,7 @@
  *             line, disambiguates "TOO DARK" from "STEP INTO FRAME", and
  *             records the reading per pose so dim sessions can be flagged).
  */
-const CACHE = 'titan-pose-v10';
+const CACHE = 'titan-pose-v11';
 const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {

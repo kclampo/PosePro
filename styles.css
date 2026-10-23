@@ -38,6 +38,13 @@ h1 span{color:var(--ok)}
 .bar{height:4px; background:var(--line)}
 .camInfo{padding:5px 14px; font:11px/1.2 ui-monospace,monospace; letter-spacing:.09em;
   color:var(--dim); background:#0e1216; border-bottom:1px solid var(--line)}
+.levelInfo{padding:5px 14px; font:11px/1.2 ui-monospace,monospace; letter-spacing:.09em;
+  background:#0e1216; border-bottom:1px solid var(--line)}
+.levelInfo.ok{color:var(--ok)}
+.levelInfo.warn{color:var(--wait)}
+.levelInfo.bad{color:var(--bad); font-weight:700}
+.levelInfo.off{color:var(--dim)}
+.gates li.adv .dot{background:var(--wait); box-shadow:0 0 10px rgba(245,196,81,.6)}
 .fill{height:100%; width:0; background:var(--ok); transition:width .4s}
 
 .panel{padding:14px 16px 28px; display:flex; flex-direction:column; gap:12px}

@@ -1,4 +1,4 @@
-/* app.js — TITAN POSE v1.3 — real-time posing gate trainer
+/* app.js — TITAN POSE v1.8.3 — real-time posing gate trainer
  *
  * Runs 100% on-device. No network calls after load. No credentials.
  * MediaPipe Pose Landmarker (WASM/GPU) -> body-relative measurements -> gates -> green/red.
@@ -119,6 +119,61 @@ let liveFacing = facing;          // what the DEVICE actually gave us, for the l
 let voiceOn = prefs.voiceOn !== false;
 let lastCueSpoken = '', lastCueAt = 0, lastSpeakAt = 0, readySpoken = false, outFrameAt = 0;
 
+// ── camera roll (phone not level) ────────────────────────────────────────
+// A phone that is off-level by g degrees rotates the whole body in the image.
+// shoulderTilt then reads a tilt that belongs to the PHONE, not the athlete —
+// at 3 deg roll that is 3 deg of false shoulder tilt against a +/-3 deg band,
+// i.e. permanently red and un-passable. Kevin called this on 2026-10-22.
+const DEROL_MAX  = 6;   // auto-correct roll up to this many degrees
+const LEVEL_WARN = 3;   // above this, tell him to physically fix the phone
+
+let rollDeg = 0, levelReady = false;
+
+function initLevel() {
+  if (typeof DeviceOrientationEvent === 'undefined') return;
+  const attach = () => {
+    window.addEventListener('deviceorientation', e => {
+      if (e.gamma == null || !Number.isFinite(e.gamma)) return;
+      rollDeg = e.gamma; levelReady = true;
+    }, { passive: true });
+  };
+  // iOS 13+ needs an explicit gesture-bound permission
+  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission()
+      .then(p => { if (p === 'granted') attach(); }).catch(() => {});
+  } else attach();
+}
+
+// Un-rotate the body so it is judged as if the phone were perfectly level.
+// Rotation happens in ISOTROPIC space (x scaled to the same pixel units as y),
+// otherwise the aspect ratio distorts the rotation itself.
+function deroll(lm) {
+  if (!levelReady || Math.abs(rollDeg) < 0.2) return lm;
+  const deg = Math.max(-DEROL_MAX, Math.min(DEROL_MAX, rollDeg));
+  const th = deg * Math.PI / 180;              // ⚠ sign field-verified below
+  const c = Math.cos(th), s = Math.sin(th);
+  const A = (video.videoWidth || 1) / (video.videoHeight || 1);
+  return lm.map(p => {
+    const X = (p.x - 0.5) * A, Y = p.y - 0.5;
+    return { ...p, x: 0.5 + (X * c - Y * s) / A, y: 0.5 + (X * s + Y * c) };
+  });
+}
+
+// Shoulder tilt and every asymmetry check are judged on an UN-ROLLED body, so a
+// phone that is slightly off-level stops telling him to drop a shoulder that is
+// already level. Shows the live roll so he can fix the phone if it is far out.
+function updateLevelUI() {
+  const el = $('levelInfo');
+  if (!el) return;
+  if (!levelReady) { el.textContent = 'LEVEL — unavailable'; el.className = 'levelInfo off'; return; }
+  const d = Math.abs(rollDeg);
+  const cls = d <= 1 ? 'ok' : d <= LEVEL_WARN ? 'warn' : 'bad';
+  const state = d <= 1 ? 'LEVEL' : d <= LEVEL_WARN ? 'AUTO-LEVELLING' : 'PHONE TILTED — FIX IT';
+  const shown = levelReady ? `${rollDeg >= 0 ? '+' : ''}${rollDeg.toFixed(1)}°` : '';
+  el.textContent = `${state} · ${shown}`;
+  el.className = 'levelInfo ' + cls;
+}
+
 // ── geometry ─────────────────────────────────────────────────────────────
 const angle = (a, b, c) => {
   const v1 = [a.x - b.x, a.y - b.y], v2 = [c.x - b.x, c.y - b.y];
@@ -127,8 +182,19 @@ const angle = (a, b, c) => {
   return Math.acos(Math.max(-1, Math.min(1, (v1[0]*v2[0] + v1[1]*v2[1]) / d))) * 180 / Math.PI;
 };
 
+// ⚠️⚠️ THE ISOTROPY FIX — this was a real bug, found 2026-10-22.
+// Landmark x and y are BOTH normalised 0..1, but the frame is W x H pixels: one
+// unit of x is W px, one unit of y is H px. Any angle, or any x-over-y ratio,
+// computed straight from those numbers is therefore WRONG — and wrong by an
+// amount that depends on the aspect ratio AND on which way the limb points.
+// On a 1080x1440 portrait frame a true 110 deg elbow measured 64.1 deg, which is
+// exactly the kind of nonsense that made "elbows level" un-passable.
+// ⇒ Scale x into the same units as y before measuring anything.
+//   RATIOS OF y TO y (elbowAbove) were already safe; RATIOS OF x TO y (spanTorso)
+//   were not, and every ANGLE was unsafe.
 function measure(lm) {
-  const P = i => lm[i];
+  const A = (video.videoWidth || 1) / (video.videoHeight || 1);
+  const P = i => ({ x: lm[i].x * A, y: lm[i].y, visibility: lm[i].visibility });
   const shY = (P(L.LSH).y + P(L.RSH).y) / 2;
   const hipY = (P(L.LHIP).y + P(L.RHIP).y) / 2;
   const elY = (P(L.LEL).y + P(L.REL).y) / 2;
@@ -195,7 +261,13 @@ function evaluate(pose, m) {
         : (v >= g.min && v <= g.max);            // must be clean to enter
     }
     gatePrev[g.id] = ok;
-    return { ...g, value: v, pass: ok };
+    // ⚠️ ADVISORY — reported and spoken, but does NOT block the lock.
+    // elbowAngle was measured in anisotropic (normalised x,y) space until
+    // 2026-10-23, so every band on it was derived from a wrong number. Those
+    // bands are invalid until re-derived from real post-fix data; until then
+    // this gate gives information instead of holding the athlete hostage.
+    const advisory = !!g.advisory || g.measure === 'elbowAngle';
+    return { ...g, value: v, pass: ok, advisory };
   });
 }
 
@@ -290,7 +362,7 @@ function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
   t0 = performance.now();
-  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8.2',
+  session = { session: { date: new Date().toISOString(), app: 'titan-pose v1.8.3',
                          started_at: new Date().toISOString(),
                          camera: facing,
                          resolution: `${video.videoWidth}x${video.videoHeight}`,
@@ -404,6 +476,7 @@ function loop() {
   requestAnimationFrame(loop);
   if (!landmarker || video.readyState < 2) return;
   syncOverlay();
+  updateLevelUI();
   if (video.currentTime === lastVideoTime) return;
   lastVideoTime = video.currentTime;
 
@@ -423,16 +496,17 @@ function loop() {
   }
 
   const pose = order[idx];
-  const m = smooth(measure(lm));   // median-smoothed: see the smoothing block
+  // ORDER MATTERS: un-roll the body -> measure in isotropic space -> median smooth.
+  const m = smooth(measure(deroll(lm)));
   const gates = evaluate(pose, m);
 
   // per-gate UI
   gates.forEach(g => {
     const li = elGateList.querySelector(`[data-g="${g.id}"]`);
-    if (li) li.className = g.pass ? 'ok' : 'bad';
+    if (li) li.className = g.pass ? 'ok' : (g.advisory ? 'adv' : 'bad');
   });
 
-  const allGreen = gates.every(g => g.pass) && m.vis > 0.5;
+  const allGreen = gates.every(g => g.pass || g.advisory) && m.vis > 0.5;
 
   if (!allGreen) {
     greenRunStart = 0;
@@ -654,6 +728,7 @@ async function exportSession() {
 elStart.addEventListener('click', async () => {
   try {
     if (speechOK) speechSynthesis.getVoices();   // warm the voice list on the gesture
+    initLevel();                                  // needs this same gesture on iOS
     await startCamera();
     startSession();
   } catch (e) {
