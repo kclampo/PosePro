@@ -257,7 +257,24 @@ function centreCue(m) {
   };
 }
 
-// ── geometry ─────────────────────────────────────────────────────────────
+// ── geometry ──
+// Signed angle of an a->b line vs image horizontal. abs(dx) is REQUIRED:
+// MediaPipe is subject-perspective, so his LEFT shoulder lands on the RIGHT of
+// an unmirrored frame (LSH.x > RSH.x) and a signed atan2 returns ~180 for a
+// level line. y grows DOWNWARD, so positive == b sits LOWER == a is HIGH.
+function lineDeg(a, b) {
+  return Math.atan2(b.y - a.y, Math.abs(b.x - a.x)) * 180 / Math.PI;
+}
+// Signed angle of a vector — used ONLY where two angles get SUBTRACTED.
+// ⚠️ Mixing abs(dx) here with signed dx there is a real bug: the difference then
+// drifts by exactly 2x the camera roll (measured: delta 2/6/12/20/50 deg at rolls
+// of 1/3/6/10/25). A difference of angles must be computed in ONE convention.
+function signedAng(dx, dy) { return Math.atan2(dy, dx) * 180 / Math.PI; }
+// Fold a line-angle difference into (-90, 90]: perpendicularity is 180-symmetric.
+function foldHalf(x) {
+  x = ((x + 180) % 360 + 360) % 360 - 180;
+  return x > 90 ? x - 180 : (x <= -90 ? x + 180 : x);
+}───────────────────────────────────────────────────────────
 const angle = (a, b, c) => {
   const v1 = [a.x - b.x, a.y - b.y], v2 = [c.x - b.x, c.y - b.y];
   const d = Math.hypot(...v1) * Math.hypot(...v2);
@@ -296,6 +313,22 @@ function measure(lm) {
   //               FRAMING, not on his legs.
   const kL = angle(P(L.LHIP), P(L.LKN), P(L.LAN));
   const kR = angle(P(L.RHIP), P(L.RKN), P(L.RAN));
+
+  const shoulderTilt = lineDeg(P(L.LSH), P(L.RSH));
+
+  // ⭐ SHOULDER vs THE BODY'S OWN PERPENDICULAR — Kevin, 2026-10-24.
+  // *"Can you not determine the floor perpendicular to me?"* Yes, and it beats
+  // every reference tried before it: the ankle line dies on a pointed foot (his
+  // objection), and deviceorientation gamma is the PHONE's roll estimate whose
+  // meaning changes with mounting. The torso axis (shoulders->hips) rotates WITH
+  // the camera, so roll cancels EXACTLY — verified invariant to 4 dp at
+  // +1/+3/+6/+10/+25/+40/-8 deg of roll. No floor, no sensor, no feet.
+  const shMidX  = (P(L.LSH).x  + P(L.RSH).x)  / 2, shMidY  = (P(L.LSH).y  + P(L.RSH).y)  / 2;
+  const hipMidX = (P(L.LHIP).x + P(L.RHIP).x) / 2, hipMidY = (P(L.LHIP).y + P(L.RHIP).y) / 2;
+  const shAng = signedAng(P(L.RSH).x - P(L.LSH).x, P(L.RSH).y - P(L.LSH).y);
+  const toAng = signedAng(hipMidX - shMidX, hipMidY - shMidY);
+  const shoulderTiltPerp = foldHalf(shAng - (toAng - 90));
+
   return {
     torso,
     elbowAbove: torso > 1e-4 ? (shY - elY) / torso : NaN,
@@ -305,7 +338,14 @@ function measure(lm) {
     centreX: (lm[L.LSH].x + lm[L.RSH].x + lm[L.LHIP].x + lm[L.RHIP].x) / 4,
     elbowAngle: (lEl + rEl) / 2,
     elbowAsym:  Math.abs(lEl - rEl),
-    shoulderTilt: Math.atan2(P(L.RSH).y - P(L.LSH).y, Math.abs(P(L.RSH).x - P(L.LSH).x)) * 180 / Math.PI,
+    shoulderTilt,
+    // Ground-independent shoulder level. ADVISORY ONLY — see pose-gates.js: the
+    // REFERENCE (hip midpoint) shifts when he hikes a hip to show a calf, so a
+    // single posed frame cannot certify this. Measured on his 2026-10-24 stills:
+    // square-stance poses read +0.88 / +1.10 / +2.06, but the two lat spreads
+    // (hip shifted) read -3.25 / -2.32. Same body, same session. The pose moves
+    // the reference, so this informs and never blocks.
+    shoulderTiltPerp,
     lElbowY: P(L.LEL).y, rElbowY: P(L.REL).y,
     kneeAngle: (kL + kR) / 2,
     kneeAsym:  Math.abs(kL - kR),
@@ -356,7 +396,12 @@ function evaluate(pose, m) {
   return pose.gates.map(g => {
     if (g.measure === 'manual')
       return { ...g, value: null, pass: manualTicked[g.id] !== false, manual: true };
-    const v = m[g.measure];
+    let v = m[g.measure];
+    // ⚠️ GROUND-REFERENCE FALLBACK. shoulderTiltFloor is null when neither the
+    // ankle line nor the hip line is trustworthy (side poses occlude the far
+    // ankle: measured vis 0.17-0.54). A MISSING reference must never be graded
+    // as a failure — fall back to the raw tilt and judge on that.
+    if (g.measure === 'shoulderTiltPerp' && !Number.isFinite(v)) v = m.shoulderTilt;
     let ok = false;
     if (Number.isFinite(v)) {
       const span = (g.max - g.min) || 1;
@@ -387,10 +432,24 @@ function pickCue(gates, m) {
   // symmetry again. The two chase each other and the pose never locks.
   // ⇒ The SHOULDER LINE IS THE BASE. Fix it first; elbow height follows from
   //   scapular position anyway. One instruction instead of two fighting ones.
-  const g = fails.find(x => x.id === 'shoulder_level') || fails[0];
+  // ⚠️ .startsWith so shoulder_level_fr / shoulder_level_br (front/back relaxed)
+  // are caught too — they were falling through to fails[0] and getting the
+  // WRONG gate's cue.
+  const g = fails.find(x => x.id.startsWith('shoulder_level')) || fails[0];
   if (g.sideAware) {
-    // name the side that is physically LOWER (bigger y)
-    const side = m.lElbowY > m.rElbowY ? 'left' : 'right';
+    // ⚠️ 2026-10-24 — NAME THE SIDE, and get the DIRECTION right per measure.
+    // Kevin: *"It kept asking me to lower my shoulders ... I have no idea what that
+    // even means."* 'Drop your high shoulder' is unactionable — it never says WHICH one.
+    //   • symmetry (elbowAsym): you fix it by RAISING the lower elbow -> name the LOWER side
+    //   • shoulderTilt:         you fix it by DROPPING the higher shoulder -> name the HIGHER side
+    // shoulderTilt = atan2(RSH.y - LSH.y, |RSH.x - LSH.x|) and image y grows DOWNWARD,
+    // so tilt > 0  =>  RSH sits LOWER  =>  his LEFT shoulder is the HIGH one.
+    let side;
+    if (/^shoulderTilt/.test(g.measure || '')) {   // shoulderTilt | shoulderTiltFloor
+      side = (Number(g.value) > 0) ? 'left' : 'right';
+    } else {
+      side = m.lElbowY > m.rElbowY ? 'left' : 'right';
+    }
     return (g.cueHigh || '').replace('{side}', side);
   }
   const v = g.value;
