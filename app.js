@@ -1,4 +1,4 @@
-/* app.js — TITAN POSE v1.8.4 — real-time posing gate trainer
+/* app.js — TITAN POSE v1.8.8 — real-time posing gate trainer
  *
  * ⚠️ The number on the page comes from version.js (window.APP_VERSION), NOT from
  * this comment. They drifted apart once already: this header said v1.8.3 while
