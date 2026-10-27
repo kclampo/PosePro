@@ -69,6 +69,21 @@ const STALE_FALLBACK_MS  = 3500;
 // physique problem it is FIXABLE — tilt the phone, step back — so it blocks the
 // hold rather than merely warning.
 const LEG_VIS_MIN    = 0.50;   // front/back: knees AND ankles must be visible
+// ⭐ 2026-10-27 FRAMING HYSTERESIS. legVis is the MIN over 4 leg landmarks, so it
+// oscillates across 0.50 as his feet drift in and out of shot. Every crossing
+// re-enabled physique cues computed on a body the model cannot see.
+// Measured on the 10-27 session: the FOUR poses that could not lock had legVis
+// 0.01-0.02 at commit; the FOUR that locked had 0.79-0.97. Total separation.
+// Those were FRAMING failures wearing a physique costume.
+const FRAME_HYST     = 0.08;   // margin required to flip framing state either way
+let   frameOkPrev    = false;
+// ⭐ 2026-10-27 CUE SETTLE. loadPose() zeroes lastSpeakAt, so the first frame of a
+// new pose can SPEAK IMMEDIATELY using geometry that still belongs to the pose he
+// is walking out of. That is the mechanism behind "abs and legs kept telling me to
+// lower my shoulders" - impossible, because abs_thigh has NO shoulder gate at all.
+const CUE_SETTLE_MS  = 1500;
+// ⭐ KEVIN'S REQUEST 2026-10-27: capture a still when a lock is not happening.
+const STUCK_STILL_MS = 10_000;
 const SIDE_ANKLE_MIN = 0.30;   // side: ankle only; the far knee is occluded
 
 // ── v1.8.6 LEG ADVISORY ──────────────────────────────────────────────────
@@ -560,7 +575,7 @@ function loadPose() {
   greenRunStart = 0; holdAccum = 0; lastTick = performance.now();
   poseLoadAt = performance.now(); sawRed = false;   // v1.8.5 anti-false-green
   lastCueSpoken = ''; readySpoken = false; outFrameAt = 0; lastSpeakAt = 0;
-  resetSmooth(); resetGates();
+  resetSmooth(); resetGates(); frameOkPrev = false;
   elPose.textContent = p.label;
   elCue.textContent = p.cues.join(' · ');
   elCue.className = 'cue';
@@ -700,6 +715,17 @@ function loop() {
   }
 
   const pose = order[idx];
+
+  // ⭐ KEVIN'S OWN REQUEST, 2026-10-27: *"if after 10 seconds you don't get a lock
+  // grab a picture so you can train on it to see why a lock is not happening."*
+  // HE IS RIGHT, and it is why the 10-27 session is only half-diagnosable: capture
+  // fired ONLY on POSE LOCKED, so the four poses that FAILED have no photo at all.
+  // You cannot debug a failure you did not photograph.
+  if (currentRecord && !currentRecord.t_green && !currentRecord.stuck_still
+      && (performance.now() - poseLoadAt) > STUCK_STILL_MS) {
+    captureStill(pose.id, pose.label, 'stuck_still', '_STUCK');
+  }
+
   // ORDER MATTERS: un-roll the body -> measure in isotropic space -> median smooth.
   const m = smooth(measure(deroll(lm)));
   const gates = evaluate(pose, m);
@@ -713,7 +739,10 @@ function loop() {
   // ── v1.8.6 FRAMING PRE-GATE ────────────────────────────────────────────
   const framingNeed = pose.facing === 'SIDE' ? SIDE_ANKLE_MIN : LEG_VIS_MIN;
   const framingHave = pose.facing === 'SIDE' ? m.ankleVis : m.legVis;
-  const framingOk = framingHave >= framingNeed;
+  const framingOk = frameOkPrev
+    ? framingHave >= framingNeed - FRAME_HYST
+    : framingHave >= framingNeed + FRAME_HYST;
+  frameOkPrev = framingOk;
 
   const allGreen = framingOk && gates.every(g => g.pass || g.advisory) && m.vis > 0.5;
 
@@ -736,6 +765,15 @@ function loop() {
       currentRecord.legVis = +framingHave.toFixed(2);
       currentRecord.kneeAngle = Number.isFinite(m.kneeAngle) ? +m.kneeAngle.toFixed(1) : null;
       currentRecord.kneeAsym = Number.isFinite(m.kneeAsym) ? +m.kneeAsym.toFixed(1) : null;
+      draw(lm, gates);
+      return;
+    }
+    // ⚠️ 2026-10-27 — DO NOT CUE A BODY THAT IS STILL WALKING INTO THE POSE.
+    // The framing check above still runs (a framing failure is real from frame one),
+    // but a PHYSIQUE cue inside the settle window is describing the previous pose.
+    if (performance.now() - poseLoadAt < CUE_SETTLE_MS) {
+      elReady.textContent = 'SETTLING…'; elReady.className = 'ready wait';
+      elTimer.textContent = (holdAccum / 1000).toFixed(1);
       draw(lm, gates);
       return;
     }
@@ -984,7 +1022,7 @@ function summaryText() {
 // he is motionless, so there is no motion blur. Drawn from the LIVE <video> at
 // full sensor resolution — deliberately NOT decoded from the recorded stream,
 // which would stack H.264 softening on top of the pose.
-function captureStill(poseId, label) {
+function captureStill(poseId, label, field, tag) {
   try {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return;
@@ -996,12 +1034,16 @@ function captureStill(poseId, label) {
     if (liveFacing === 'user') { ctx.translate(w, 0); ctx.scale(-1, 1); }
     ctx.drawImage(video, 0, 0, w, h);
     const seq = String(shots.length + 1).padStart(2, '0');
-    const name = `${seq}_${poseId}.jpg`;
+    // tag '_STUCK' marks a still taken because the pose would NOT lock. These are
+    // the most valuable frames in the export: they show what the model saw at the
+    // moment it failed, which is the only way to tell a framing problem from a
+    // landmark problem from a real pose fault.
+    const name = `${seq}_${poseId}${tag || ''}.jpg`;
     const rec = currentRecord;
     cv.toBlob(function (blob) {
       if (!blob) return;
       shots.push({ name, pose: poseId, label, blob, taken_at: new Date().toISOString() });
-      if (rec) rec.still = name;
+      if (rec) rec[field || 'still'] = name;
       if (elSummary && session) elSummary.textContent =
         summaryText() + `\nPHOTOS: ${shots.length} captured`;
     }, 'image/jpeg', 0.92);

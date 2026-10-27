@@ -1,5 +1,5 @@
 {
-  "version": "1.8.7",
-  "released": "2026-10-24",
-  "notes": "Shoulder cue names the side, and shoulder level is now measured against the FLOOR (ankle line) instead of the phone's own tilt sensor."
+  "version": "1.8.8",
+  "released": "2026-10-27",
+  "notes": "Framing hysteresis, a cue settle window, and a still captured whenever a pose will not lock."
 }
