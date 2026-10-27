@@ -1,5 +1,5 @@
 {
-  "version": "1.8.8",
+  "version": "1.8.9",
   "released": "2026-10-27",
-  "notes": "Framing hysteresis, a cue settle window, and a still captured whenever a pose will not lock."
+  "notes": "Hotfix: a stray character in the source stopped the whole app loading. START did nothing."
 }

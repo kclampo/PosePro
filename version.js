@@ -17,7 +17,7 @@
  *      sw.js        -> CACHE
  */
 (function () {
-  const APP_VERSION = '1.8.8';
+  const APP_VERSION = '1.8.9';
 
   window.APP_VERSION = APP_VERSION;
 

@@ -289,7 +289,8 @@ function signedAng(dx, dy) { return Math.atan2(dy, dx) * 180 / Math.PI; }
 function foldHalf(x) {
   x = ((x + 180) % 360 + 360) % 360 - 180;
   return x > 90 ? x - 180 : (x <= -90 ? x + 180 : x);
-}───────────────────────────────────────────────────────────
+}
+// ───────────────────────────────────────────────────────────
 const angle = (a, b, c) => {
   const v1 = [a.x - b.x, a.y - b.y], v2 = [c.x - b.x, c.y - b.y];
   const d = Math.hypot(...v1) * Math.hypot(...v2);
