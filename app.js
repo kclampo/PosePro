@@ -58,6 +58,18 @@ const READY_MS = 800;        // must be green this long before the hold clock st
 // a performed pose — it records the doubt instead of hiding it.
 const MIN_SETTLE_MS      = 1200;
 const STALE_FALLBACK_MS  = 3500;
+// ⭐ v1.8.10 — LOCK DWELL. Kevin, 2026-10-27: "on pose pro the front abs and most
+// muscular locked before I was in the pose."
+// He was right, and the geometry proves it: he went green 2.04 s (front lat
+// spread), 2.35 s (side chest) and 2.51 s (most muscular) into each pose, having
+// had 0.73 s to transition. A body WALKING INTO a pose sweeps through the target
+// elbow angle and elbow height for a few frames — so `allGreen` was true for a
+// transient instant and t_green stamped on it.
+// ⇒ allGreen must now HOLD for LOCK_DWELL_MS before t_green may stamp. You cannot
+//   hold a transient angle for 800 ms while moving.
+// ⚠️ This is a DWELL, not a longer settle — a longer settle only delays the same
+// false stamp. It does not require continuity, and continuity is the whole point.
+const LOCK_DWELL_MS      = 800;
 
 // ── v1.8.6 FRAMING PRE-GATE ──────────────────────────────────────────────
 // Measured on the 2026-10-22 check-in (11 photos, 3024x4032):
@@ -386,6 +398,18 @@ const SMOOTH_N = 9;
 let mbuf = [];
 
 function resetSmooth() { mbuf = []; }
+
+// v1.8.10 — the ONE place gate values become export rows. Called at the locked
+// frame and nowhere else, so the record describes the hold rather than the exit.
+function snapshotGates(gates) {
+  return gates.map(g => ({
+    name: g.id,
+    pass: !!g.pass,
+    value: Number.isFinite(g.value) ? +g.value.toFixed(3) : null,
+    target: g.manual ? 'manual' : `[${g.min}, ${g.max}]`,
+    status: g.status,
+  }));
+}
 
 function smooth(m) {
   mbuf.push(m);
@@ -750,7 +774,10 @@ function loop() {
   if (!allGreen) {
     greenRunStart = 0;
     readySpoken = false;
-    sawRed = true;               // v1.8.5: a genuine red->green edge is now possible
+    // v1.8.10 — count a red only AFTER the settle window. Walking out of the
+    // PREVIOUS pose leaves red frames in the first moments of this one, which
+    // satisfied the v1.8.5 guard before he had even turned around.
+    if (performance.now() - poseLoadAt >= MIN_SETTLE_MS) sawRed = true;
     // ⚠️ A framing failure OUTRANKS a physique cue. Telling him his elbow is low
     // when the real problem is his feet are out of shot sends him the wrong way.
     if (!framingOk) {
@@ -798,11 +825,24 @@ function loop() {
     // v1.8.5 — stamp t_green only when the pose has SETTLED *and* he has moved
     // into it. Without this a pose inherits the previous pose's geometry and
     // stamps green on frame one (measured: 27 ms on most_muscular).
+    // v1.8.10 — PLUS a dwell: allGreen must hold for LOCK_DWELL_MS. `sawRed` alone
+    // was not enough because walking OUT of the previous pose sets it within
+    // milliseconds of loadPose(), so the guard was satisfied before he had even
+    // turned around. See the LOCK_DWELL_MS comment at the constants.
     if (currentRecord && currentRecord.t_green == null) {
       const settledFor = performance.now() - poseLoadAt;
-      if (settledFor >= MIN_SETTLE_MS && (sawRed || settledFor >= STALE_FALLBACK_MS)) {
+      const greenFor0 = now - greenRunStart;
+      if (settledFor >= MIN_SETTLE_MS && greenFor0 >= LOCK_DWELL_MS
+          && (sawRed || settledFor >= STALE_FALLBACK_MS)) {
         currentRecord.t_green = Math.round(performance.now() - t0);
         if (!sawRed) currentRecord.stale_geometry = true;
+        // ⭐ FREEZE the gate values at the LOCKED frame. They used to be
+        // overwritten on every frame including the 0.73 s he spends leaving the
+        // pose, so the export described the EXIT, not the hold — abs_thigh saved
+        // elbow_high 0.283 against a 0.45 floor and most_muscular saved a failing
+        // elbow_angle, both after completing a 10 s green hold.
+        currentRecord.gates = snapshotGates(gates);
+        currentRecord.lock_green_ms = Math.round(greenFor0);
       }
     }
     const greenFor = now - greenRunStart;
@@ -831,12 +871,12 @@ function loop() {
       : (currentRecord.kneeAsym != null && currentRecord.kneeAsym > KNEE_ASYM_MAX)
         ? 'L/R knee asymmetric — is one leg slack?'
         : null;
-  currentRecord.gates = gates.map(g => ({
-    name: g.id, pass: !!g.pass,
-    value: Number.isFinite(g.value) ? +g.value.toFixed(3) : null,
-    target: g.manual ? 'manual' : `[${g.min}, ${g.max}]`,
-    status: g.status,
-  }));
+  // v1.8.10 — FREEZE ONCE LOCKED. This used to overwrite on every frame, so the
+  // saved gate values were whatever the body was doing as he LEFT the pose.
+  // After t_green the snapshot taken at the locked frame stands.
+  if (currentRecord && currentRecord.t_green == null) {
+    currentRecord.gates = snapshotGates(gates);
+  }
 
   draw(lm, gates);
 

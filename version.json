@@ -1,5 +1,4 @@
 {
-  "version": "1.8.9",
-  "released": "2026-10-27",
-  "notes": "Hotfix: a stray character in the source stopped the whole app loading. START did nothing."
+  "version": "1.8.10",
+  "notes": "The lock now has to be HELD. A pose could go green while you were still walking into it \u2014 measured 2.04 s, 2.35 s and 2.51 s from pose start on 2026-10-27, after only 0.73 s to transition. All-green now has to hold 800 ms before the lock stamps. Gate values are also frozen at the locked frame instead of being overwritten while you leave the pose, so the export describes the hold, not the exit."
 }
