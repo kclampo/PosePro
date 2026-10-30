@@ -1,4 +1,4 @@
 {
-  "version": "1.8.11",
-  "notes": "Abs and Thighs now has to actually be in the pose. Its elbow gates were advisory, so it locked on framing alone and fired with your arms not even behind your head. Elbow height and elbow angle now block; symmetry stays advisory because occlusion still corrupts that one."
+  "version": "1.8.12",
+  "notes": "Phone tilt is now corrected properly instead of being partly given up on. The auto-correction used to stop at 6 degrees and quietly carry the rest as error; it now corrects the full 10, and anything past 10 refuses to capture rather than recording a tilted body. Measured on a real frame, the leftover error inside 10 degrees drops from 6.8 degrees to 1.1. Separately: the failed-pose still used to be saved in total silence, so you had no way to know whether a photo existed. Every pose now ends with an audible verdict — Locked, or No lock, retake — and the next pose waits 1.4 seconds so the confirmation finishes speaking before it gets cut off."
 }

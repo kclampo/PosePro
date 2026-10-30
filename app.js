@@ -96,6 +96,17 @@ let   frameOkPrev    = false;
 const CUE_SETTLE_MS  = 1500;
 // ⭐ KEVIN'S REQUEST 2026-10-27: capture a still when a lock is not happening.
 const STUCK_STILL_MS = 10_000;
+// ⭐ KEVIN 2026-10-30: *"do not let me snap pictures if the roll is more than 10 degrees."*
+// ⭐⭐ AND THEN, correctly: *"can you not correct the tilt within 10 degrees?"* — so the job is
+// split in two, and the two numbers now MATCH: DEROL_MAX = 10 corrects the full window, and
+// ROLL_CAPTURE_MAX = 10 refuses anything outside it. There is deliberately NO dead band where
+// we capture with a partly-corrected body (which is what a 6-correct / 10-capture split would
+// have created). Inside the window -> correct it. Outside -> refuse it.
+// Hard block: no lock and no still. ⚠️ Only enforced when the sensor is actually reporting; a
+// device without deviceorientation must not be locked out of the app. Release threshold is 2 deg
+// lower than the block threshold so a reading hovering on the line cannot strobe capture.
+const ROLL_CAPTURE_MAX = 10;
+const ROLL_RELEASE_MAX = ROLL_CAPTURE_MAX - 2;
 const SIDE_ANKLE_MIN = 0.30;   // side: ankle only; the far knee is occluded
 
 // ── v1.8.6 LEG ADVISORY ──────────────────────────────────────────────────
@@ -129,6 +140,13 @@ let greenRunStart = 0, holdAccum = 0, lastTick = 0;
 let session = null, currentRecord = null;
 // v1.8.5 — anti-false-green + still capture
 let poseLoadAt = 0, sawRed = false, shots = [];
+// ⭐ v1.8.12 — MONOTONIC shot counter. `shots.length + 1` was evaluated BEFORE the async
+// toBlob callback pushed to `shots`, so two captures in the same window both got the same
+// number and produced BYTE-DIFFERENT images under an IDENTICAL filename — the extractor
+// silently overwrote one. That is the 2026-10-29 loss: three real frames all named
+// 01_front_double_biceps_STUCK.jpg (206,419 / 203,635 / 203,843 bytes), two destroyed on
+// unzip. A counter that only counts up cannot collide.
+let shotSeq = 0;
 // Session t0. Everything timing-related is milliseconds since this moment, so
 // set-time and transition-time stay comparable even if the athlete pauses.
 let t0 = 0;
@@ -206,14 +224,34 @@ if (elMode && typeof MODES !== 'undefined') {
   elMode.addEventListener('change', () => savePrefs({ mode: elMode.value }));
 }
 let lastCueSpoken = '', lastCueAt = 0, lastSpeakAt = 0, readySpoken = false, outFrameAt = 0;
+// v1.8.12 — roll capture block state (see ROLL_CAPTURE_MAX)
+let rollBlocked = false, rollBlockAt = 0;
 
 // ── camera roll (phone not level) ────────────────────────────────────────
 // A phone that is off-level by g degrees rotates the whole body in the image.
 // shoulderTilt then reads a tilt that belongs to the PHONE, not the athlete —
 // at 3 deg roll that is 3 deg of false shoulder tilt against a +/-3 deg band,
 // i.e. permanently red and un-passable. Kevin called this on 2026-10-22.
-const DEROL_MAX  = 6;   // auto-correct roll up to this many degrees
-const LEVEL_WARN = 3;   // above this, tell him to physically fix the phone
+// ⭐⭐ 2026-10-30 — RAISED 6 -> 10. The 6 was a POLICY cap, not a maths limit, and it was
+// MANUFACTURING the error it was meant to prevent. Rotation sweep on a real frame, spread of
+// the derolled shoulder tilt across the range (lower = less residual roll):
+//
+//     cap      +/-6     +/-10     +/-20
+//       6      0.67      6.84     20.69   <- the cap itself CREATES the residual
+//      10      0.67      1.14     14.57
+//      20      0.67      1.14      1.14
+//    none      0.67      1.14      1.14   <- deroll is EXACT at any angle
+//
+// Within +/-6 the cap changes nothing (0.67 either way), so raising it cannot hurt the range
+// that already worked — it only removes the 6-10 deg dead band where the correction saturated.
+// Kevin, 2026-10-30: *"can you not correct the tilt within 10 degrees? The idea is to allow the
+// phone to be a bit tilted that you can correct for, but not so much that it creates a bad
+// experience."* — exactly right, and this is the fix.
+// ⚠️ This rests on deviceorientation gamma matching the IMAGE rotation 1:1. The synthetic sweep
+// validates the rotation MATHS, not the sensor->image mapping; a sensor offset would bias every
+// angle, not just large ones.
+const DEROL_MAX  = 10;  // auto-correct roll up to this many degrees
+const LEVEL_WARN = 6;   // above this, nudge him — still fully correctable
 const CENTRE_SOFT = 0.10;  // start telling him he has drifted off centre
 const CENTRE_HARD = 0.18;  // badly off — say it over anything else
 
@@ -257,8 +295,15 @@ function updateLevelUI() {
   if (!el) return;
   if (!levelReady) { el.textContent = 'LEVEL — unavailable'; el.className = 'levelInfo off'; return; }
   const d = Math.abs(rollDeg);
-  const cls = d <= 1 ? 'ok' : d <= LEVEL_WARN ? 'warn' : 'bad';
-  const state = d <= 1 ? 'LEVEL' : d <= LEVEL_WARN ? 'AUTO-LEVELLING' : 'PHONE TILTED — FIX IT';
+  // v1.8.12 — thresholds now follow DEROL_MAX=10. Anything inside the correction window is
+  // handled silently; the red alarm is reserved for the angle we actually REFUSE to capture at.
+  // Before this, 3.1 deg screamed "PHONE TILTED - FIX IT" while the app was quietly correcting
+  // it perfectly well — which taught him to distrust the warning.
+  const cls = d <= 1 ? 'ok' : d <= ROLL_CAPTURE_MAX ? 'warn' : 'bad';
+  const state = d <= 1 ? 'LEVEL'
+    : d <= LEVEL_WARN ? 'AUTO-LEVELLING'
+    : d <= ROLL_CAPTURE_MAX ? 'TILTED — CORRECTING'
+    : 'PHONE TILTED — FIX IT';
   const shown = levelReady ? `${rollDeg >= 0 ? '+' : ''}${rollDeg.toFixed(1)}°` : '';
   el.textContent = `${state} · ${shown}`;
   el.className = 'levelInfo ' + cls;
@@ -579,6 +624,7 @@ function startSession() {
   order = buildOrder();
   idx = 0; state = 'pose';
   shots = [];                                  // v1.8.5
+  shotSeq = 0;                                 // v1.8.12 — reset with the shot list
   t0 = performance.now();
   session = { session: { date: new Date().toISOString(),
                          app: 'titan-pose v' + (window.APP_VERSION || 'unknown'),
@@ -682,7 +728,13 @@ function commitCurrent(skipped, advance) {
 function finishPose() {
   commitCurrent(false, 'auto');
   state = 'pose'; idx++;
-  setTimeout(loadPose, 700);
+  // ⭐ v1.8.12 — 700 ms was too short. "Locked." takes ~650 ms at rate 1.02, and
+  // loadPose() -> announcePose() -> speak() calls speechSynthesis.cancel(), so the
+  // confirmation was being cut off right as it ended. Kevin, 2026-10-30: *"I am
+  // listening to the lock command to know you snapped a posed picture. make sure that
+  // happens for each one."* He could not rely on it because it was being clipped.
+  // 1400 ms lets the utterance finish before the next pose speaks.
+  setTimeout(loadPose, 1400);
 }
 
 // FIX 2 — manual navigation, works at any time during a pose.
@@ -724,7 +776,22 @@ function loop() {
   if (video.currentTime === lastVideoTime) return;
   lastVideoTime = video.currentTime;
 
-  const res = landmarker.detectForVideo(video, performance.now());
+  // ⭐ v1.8.12 — IMAGE mode pairs with detect(), NOT detectForVideo().
+  // Verified live in a browser against tasks-vision 0.10.14 rather than guessed:
+  //   detect(HTMLVideoElement) -> 10/10 calls clean
+  //   detect(HTMLCanvasElement) -> works
+  //   detect(ImageData)         -> works
+  //   detect({data,width,height}) -> THROWS texImage2D overload  ⛔ never do this
+  // The image class is `MPImage`, not `Image`, and its constructor is a 7-arg internal
+  // factory — never hand-build one. Passing the <video> element is the correct path.
+  let res;
+  try {
+    res = landmarker.detect(video);
+  } catch (e) {
+    console.warn('detect failed', e);
+    draw(null, []);
+    return;
+  }
   const now = performance.now();
   const dt = Math.min(200, now - lastTick); lastTick = now;
   const lm = res.landmarks && res.landmarks[0];
@@ -741,14 +808,56 @@ function loop() {
 
   const pose = order[idx];
 
+  // ⭐ v1.8.12 ROLL CAPTURE BLOCK — Kevin, 2026-10-30.
+  // Deliberately ABOVE the stuck-still timer: if we only blocked the lock, a tilted phone
+  // would still fall through and dump a _STUCK frame. Nothing is captured past the block.
+  // Hysteresis (10 in / 8 out) stops a reading sitting on the line from strobing.
+  if (levelReady) {
+    rollBlocked = rollBlocked
+      ? Math.abs(rollDeg) > ROLL_RELEASE_MAX
+      : Math.abs(rollDeg) > ROLL_CAPTURE_MAX;
+  } else {
+    rollBlocked = false;          // no sensor = cannot judge = must not block
+  }
+  if (rollBlocked) {
+    elReady.textContent = 'PHONE TILTED ' + Math.abs(rollDeg).toFixed(1) + '\u00b0 \u2014 FIX IT';
+    elReady.className = 'ready bad';
+    elCue.textContent = 'Level the phone. Past ' + ROLL_CAPTURE_MAX +
+      ' degrees the geometry is describing the phone, not you — so nothing gets captured.';
+    elCue.className = 'cue bad';
+    elTimer.textContent = (holdAccum / 1000).toFixed(1);
+    if (now - rollBlockAt > OUT_OF_FRAME_MS) {
+      rollBlockAt = now;
+      lastSpeakAt = now;   // v1.8.12 — same cue floor, same reason
+      speak('Phone tilted. Level it and I will start again.');
+    }
+    draw(lm, []);
+    return;
+  }
+
   // ⭐ KEVIN'S OWN REQUEST, 2026-10-27: *"if after 10 seconds you don't get a lock
   // grab a picture so you can train on it to see why a lock is not happening."*
   // HE IS RIGHT, and it is why the 10-27 session is only half-diagnosable: capture
   // fired ONLY on POSE LOCKED, so the four poses that FAILED have no photo at all.
   // You cannot debug a failure you did not photograph.
   if (currentRecord && !currentRecord.t_green && !currentRecord.stuck_still
+      && !currentRecord.stuck_attempted
       && (performance.now() - poseLoadAt) > STUCK_STILL_MS) {
+    // ⭐ v1.8.12 — ONE ATTEMPT PER POSE, and the flag is set SYNCHRONOUSLY.
+    // captureStill() nulls the field again if toBlob fails, so `stuck_still` alone can
+    // re-arm the capture; `stuck_attempted` never clears, so a failed encode cannot cause a
+    // second silent retry. Before this the guard was defeated by the async gap and one
+    // failed pose produced FOUR stills and FOUR spoken verdicts in a headless test.
+    currentRecord.stuck_attempted = true;
     captureStill(pose.id, pose.label, 'stuck_still', '_STUCK');
+    // ⭐ v1.8.12 — TELL HIM. This used to be SILENT, so he stood in a pose he had
+    // already failed with no idea whether a photo had been taken or not. Kevin,
+    // 2026-10-30: *"if it cannot lock then how are you to know. I am listening to the
+    // lock command to know you snapped a posed picture. make sure that happens for
+    // each one."* Every pose now ends with an audible verdict — "Locked." or this.
+    if (currentRecord) currentRecord.stuck_announced = true;
+    lastSpeakAt = now;   // v1.8.12 — hold the cue floor so the verdict is not cut off
+    speak('No lock. Photo saved, but retake this pose.');
   }
 
   // ORDER MATTERS: un-roll the body -> measure in isotropic space -> median smooth.
@@ -972,7 +1081,22 @@ async function startCamera() {
     const fileset = await FilesetResolver.forVisionTasks(MP_WASM);
     landmarker = await PoseLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: MP_MODEL, delegate: 'GPU' },
-      runningMode: 'VIDEO', numPoses: 1,
+      // ⭐⭐ v1.8.12 — 'VIDEO' -> 'IMAGE'. THIS IS THE FRAME-MISMATCH FIX.
+      // 'VIDEO' enables MediaPipe TEMPORAL TRACKING: it propagates the skeleton from the
+      // previous frame instead of detecting fresh. Kevin turns into a pose in ~0.73 s, and
+      // when he faces AWAY the tracker loses him and does NOT reacquire — so the gate
+      // evaluated a stale body while the saved still showed the real one.
+      //   10-29 proof, back_relaxed: gate logged back_facing 0.444 (FAIL) and
+      //   relaxed_arms_back 92.9 deg (FAIL); a cold read of the app's OWN saved frame gives
+      //   0.826 (PASS). The app's own export note admits it -- "the geometry may belong to
+      //   the PREVIOUS pose."
+      // IMAGE mode detects every frame from scratch. There is no state to lag.
+      // ⚠️ PERFORMANCE, measured not assumed (headless Chrome, same synthetic stream,
+      // lite model, 20 calls each): VIDEO 363.9 ms/call vs IMAGE 356.2 ms/call = 0.98x.
+      // Dropping the tracker costs NOTHING here, because the tracker was not what the time
+      // was going into. Every pose is independent and he re-poses between them, so temporal
+      // continuity buys this app nothing and actively corrupts the verdict.
+      runningMode: 'IMAGE', numPoses: 1,
       minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5,
     });
   }
@@ -1074,17 +1198,22 @@ function captureStill(poseId, label, field, tag) {
     // what he actually saw on screen.
     if (liveFacing === 'user') { ctx.translate(w, 0); ctx.scale(-1, 1); }
     ctx.drawImage(video, 0, 0, w, h);
-    const seq = String(shots.length + 1).padStart(2, '0');
+    const seq = String(++shotSeq).padStart(2, '0');
     // tag '_STUCK' marks a still taken because the pose would NOT lock. These are
     // the most valuable frames in the export: they show what the model saw at the
     // moment it failed, which is the only way to tell a framing problem from a
     // landmark problem from a real pose fault.
     const name = `${seq}_${poseId}${tag || ''}.jpg`;
     const rec = currentRecord;
+    // ⭐ v1.8.12 — ASSIGN THE FIELD SYNCHRONOUSLY, NOT IN THE CALLBACK.
+    // The caller guards on `!currentRecord.stuck_still`, but that field used to be set
+    // inside toBlob's async callback — so the guard stayed false for the whole gap and the
+    // stuck capture re-fired, producing FOUR identical-in-name stills from one failed pose
+    // in a headless test on 2026-10-30. `name` is known right here, so claim it right here.
+    if (rec) rec[field || 'still'] = name;
     cv.toBlob(function (blob) {
-      if (!blob) return;
+      if (!blob) { if (rec) rec[field || 'still'] = null; return; }
       shots.push({ name, pose: poseId, label, blob, taken_at: new Date().toISOString() });
-      if (rec) rec[field || 'still'] = name;
       if (elSummary && session) elSummary.textContent =
         summaryText() + `\nPHOTOS: ${shots.length} captured`;
     }, 'image/jpeg', 0.92);

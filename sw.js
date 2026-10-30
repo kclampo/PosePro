@@ -10,7 +10,7 @@
  *             JSON; anti-false-green red->green edge so a pose cannot inherit
  *             the previous pose's geometry).
  */
-const CACHE = 'titan-pose-v20';
+const CACHE = 'titan-pose-v23';
 const SHELL = ['./', './index.html', './measure.html', './styles.css', './app.js', './measure.js', './pose-gates.js', './zip.js', './version.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
