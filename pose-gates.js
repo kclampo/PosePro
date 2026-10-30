@@ -170,11 +170,24 @@ const GATES = {
       // head occlude the wrist/elbow landmarks and the model guesses.
       // ⇒ elbow_high and symmetry are ADVISORY: still reported, never blocking,
       //   until this pose gets a measurement that survives occlusion.
+      //
+      // ⭐ 2026-10-30 — PARTIALLY REVERSED. Kevin: *"Abs and legs locks too fast,
+      // didn't wait for elbows to be pointed at camera."* HE WAS RIGHT.
+      // With every gate advisory the pose locked on FRAMING ALONE (legVis 0.84,
+      // framing true ⇒ lock), so it fired with his arms not even behind his head.
+      // The exposure on 10-30: elbow_angle 155.95 against a [40,62] band — 156 deg
+      // is nearly STRAIGHT ARMS, i.e. a coherent reading of a real, wrong position,
+      // NOT the model inventing values. symmetry also fell to 11.61 deg from the
+      // impossible 48.3 of 10-23.
+      // ⇒ elbow_high and elbow_angle are now BLOCKING. They describe arm position
+      //   geometrically and a pose that will not lock when you are not in it is
+      //   CORRECT behaviour. symmetry STAYS advisory — 11.6 deg is still ~3x the
+      //   band and that is the measure most exposed to the occlusion problem.
       gates: [
-        { id: 'elbow_high', measure: 'elbowAbove', min: 0.45, max: 1.2, status: 'estimated', advisory: true,
+        { id: 'elbow_high', measure: 'elbowAbove', min: 0.45, max: 1.2, status: 'estimated',
           label: 'Elbows driven high',
           cueLow: 'ELBOWS UP — drive them toward your EARS, not out to the sides' },
-        { id: 'elbow_angle', measure: 'elbowAngle', min: 40, max: 62, status: 'estimated', advisory: true,
+        { id: 'elbow_angle', measure: 'elbowAngle', min: 40, max: 62, status: 'estimated',
           label: 'Hands behind the head',
           cueLow: 'Bring your hands closer behind your head',
           cueHigh: 'Open your hands out from behind your head' },
